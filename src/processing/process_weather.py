@@ -24,18 +24,21 @@ def process_weather(month: str):
     # 2. Extract the hourly arrays
     hourly = data['hourly']
     
-    # 3. Create a DataFrame
+    # 3. Create a DataFrame with UTC timestamps first
     df = pd.DataFrame({
-        'timestamp': pd.to_datetime(hourly['time']),
+        'timestamp_utc': pd.to_datetime(hourly['time'], utc=True),
         'temperature_2m': hourly['temperature_2m'],
         'precipitation': hourly['precipitation']
     })
     
-    # Ensure timezone aware (Open-Meteo returns UTC or local based on request)
-    # For our contract, we want consistent timezones.
-    # We'll leave it as is for now, but this is where timezone alignment happens.
+    # 4. Align to America/New_York (Contract requirement)
+    # This automatically handles Daylight Saving Time (DST) transitions
+    df['timestamp_local'] = df['timestamp_utc'].dt.tz_convert('America/New_York')
     
-    # 4. Save to Parquet
+    # Drop the UTC column to keep the Silver schema clean
+    df = df[['timestamp_local', 'temperature_2m', 'precipitation']]
+    
+    # 5. Save to Parquet using the atomic move pattern
     temp_path = output_path + ".tmp"
     df.to_parquet(temp_path, index=False)
     os.replace(temp_path, output_path)
@@ -44,6 +47,6 @@ def process_weather(month: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--month", required=True)
+    parser.add_argument("--month", required=True, help="Month in YYYY-MM format")
     args = parser.parse_args()
     process_weather(args.month)
