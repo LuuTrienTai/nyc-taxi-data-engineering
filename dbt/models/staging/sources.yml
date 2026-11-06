@@ -1,0 +1,19 @@
+version: 2
+sources:
+  - name: raw_staging
+    schema: staging
+    tables:
+      - name: taxi_trips
+        columns:
+          - name: trip_id
+            data_tests: [not_null]
+          - name: data_month
+            data_tests: [not_null]
+      - name: weather_hourly
+        columns:
+          - name: observation_hour_utc
+            data_tests: [not_null]
+      - name: zones
+        columns:
+          - name: location_id
+            data_tests: [unique, not_null]

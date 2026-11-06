@@ -1,0 +1,14 @@
+version: 2
+models:
+  - name: mart_daily_demand
+    columns:
+      - name: service_date
+        data_tests: [not_null, unique]
+  - name: mart_zone_demand
+    columns:
+      - name: zone_id
+        data_tests: [not_null, unique]
+  - name: mart_hourly_weather
+    columns:
+      - name: pickup_hour_local
+        data_tests: [not_null, unique]
