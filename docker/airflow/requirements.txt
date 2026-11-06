@@ -1,0 +1,8 @@
+# Airflow preinstalled in base image. dbt and the team's M2/M3 Python dependencies.
+dbt-postgres==1.9.0
+psycopg[binary]>=3.1,<4
+pyarrow>=15,<24
+duckdb>=1.1,<2
+httpx>=0.26,<1
+tenacity>=8,<10
+pandas>=2.1,<3
