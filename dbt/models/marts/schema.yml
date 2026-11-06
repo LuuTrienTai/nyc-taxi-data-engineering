@@ -1,0 +1,16 @@
+version: 2
+models:
+  - name: agg_daily_demand
+    columns:
+      - name: data_month
+        data_tests: [not_null]
+      - name: pickup_day
+        data_tests: [not_null]
+  - name: agg_zone_demand
+    columns:
+      - name: pickup_location_id
+        data_tests: [not_null]
+  - name: mart_hourly_weather
+    columns:
+      - name: weather_hour_utc
+        data_tests: [not_null]
