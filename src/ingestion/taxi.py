@@ -51,7 +51,9 @@ def record_audit_log(dataset: str, target_path: Path, sha256_hex: str, row_count
 def stream_download_atomic(url: str, dest_path: Path) -> str:
     """
     Streams file from URL to a temporary .tmp file, computes SHA-256,
-    and performs an atomic rename only after complete download.
+    and performs an atomic rename only after complete download. 
+    httpx and tenacity to protect against API rate limitting like http 429 from open meteo
+    stream bytes into .tmp file, calc SHA-256 checksum, verify Parquet footer metadata w/ Airflow -> exec atomic os.replace into bronze while logging.
     """
     tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
     sha256_hash = hashlib.sha256()

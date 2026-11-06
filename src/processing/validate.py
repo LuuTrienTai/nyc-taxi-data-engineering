@@ -261,11 +261,12 @@ def validate_and_process_taxi(con: duckdb.DuckDBPyConnection, month: str) -> Non
     silver_path = SILVER_TAXI_DIR / f"yellow_tripdata_{month}.parquet"
     quarantine_path = QUARANTINE_TAXI_DIR / f"quarantine_taxi_{month}.parquet"
 
-    # Write Conformed Silver Parquet (Strictly satisfies Contract B schema + surrogate key)
+# Write Conformed Silver Parquet (Strictly satisfies Contract B + M3's data_month filter)
     silver_cnt = atomic_duckdb_copy(
         con,
-        """
+        f"""
         SELECT
+            '{month}' AS data_month,
             trip_id,
             pickup_datetime,
             dropoff_datetime,
@@ -290,11 +291,12 @@ def validate_and_process_taxi(con: duckdb.DuckDBPyConnection, month: str) -> Non
         silver_path,
     )
 
-    # Write Rejected Quarantine Parquet with quarantine_reason
+    # Write Rejected Quarantine Parquet with data_month and quarantine_reason
     quar_cnt = atomic_duckdb_copy(
         con,
-        """
+        f"""
         SELECT
+            '{month}' AS data_month,
             trip_id,
             pickup_datetime,
             dropoff_datetime,
