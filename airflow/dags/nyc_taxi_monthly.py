@@ -23,7 +23,17 @@ def run_step(commands: list[list[str]], **context) -> None:
     for command in commands:
         argv = [arg.replace("{month}", month) for arg in command]
         print("[M1] Executing:", argv, flush=True)
-        subprocess.run(argv, cwd=PROJECT_ROOT, check=True, timeout=3600)
+        result = subprocess.run(
+            argv,
+            cwd=PROJECT_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=3600,
+        )
+        if result.stdout:
+            print(result.stdout.rstrip(), flush=True)
+        result.check_returncode()
 
 
 def verify_results(**context) -> None:
