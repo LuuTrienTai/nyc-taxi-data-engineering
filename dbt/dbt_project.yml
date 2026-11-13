@@ -1,0 +1,9 @@
+name: nyc_taxi_gold
+version: '1.0.0'
+config-version: 2
+profile: nyc_taxi_gold
+model-paths: [models]
+test-paths: [tests]
+models:
+  nyc_taxi_gold:
+    +materialized: view

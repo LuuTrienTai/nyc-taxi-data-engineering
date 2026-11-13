@@ -1,0 +1,22 @@
+version: 2
+sources:
+  - name: gold
+    schema: gold
+    tables:
+      - name: fact_trip
+        columns:
+          - name: source_row
+            tests: [not_null]
+          - name: pickup_location_id
+            tests:
+              - relationships:
+                  arguments:
+                    to: source('gold', 'dim_zone')
+                    field: location_id
+      - name: dim_zone
+        columns:
+          - name: location_id
+            tests: [unique, not_null]
+      - name: agg_daily_demand
+      - name: agg_zone_demand
+      - name: agg_hourly_weather
