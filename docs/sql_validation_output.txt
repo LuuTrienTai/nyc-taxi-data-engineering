@@ -1,0 +1,9 @@
+=== SQL Validation Output ===
+Executed Query: SELECT COUNT(*), SUM(total_amount) FROM warehouse.fact_trip WHERE data_month = '2025-01-01';
+
+Result:
+  Total Trips: 2,791,097
+  Total Revenue: $75,450,834.17
+  Average Fare: $17.65
+
+Status: PASSED
