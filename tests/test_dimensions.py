@@ -22,6 +22,20 @@ class DimensionTests(unittest.TestCase):
     def test_january(self):self.check_month('2025-01',744)
     def test_spring_dst(self):self.check_month('2025-03',743)
     def test_fall_dst(self):
-        w=self.check_month('2025-11',720);self.assertEqual(w.observations.max(),2)
+        w=self.check_month('2025-11',720)
+        self.assertEqual(w.observations.max(),2)
+        self.assertEqual(int((w.observations==2).sum()),1)
+        self.assertEqual(w.observations.sum(),721)
     def test_missing_weather_rejected(self):
         with self.assertRaises(ValueError):self.check_month('2025-01',744,True)
+    def test_missing_last_local_hour_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            (root/'taxi_zone_lookup.csv').write_text('LocationID,Borough,Zone,service_zone\n1,Manhattan,Demo,Yellow\n')
+            w=self.setup_data('2025-01')
+            # Jan 31 23:00 New York equals Feb 1 04:00 UTC.
+            w=w[w.observation_time_utc!='2025-02-01T04:00']
+            w.to_parquet(root/'weather_2025-01.parquet')
+            with patch('src.pipeline.BRONZE_ZONES_DIR',root),patch('src.pipeline.BRONZE_WEATHER_DIR',root):
+                with self.assertRaisesRegex(ValueError,'Incomplete weather coverage'):
+                    prepare_dimensions('2025-01')
