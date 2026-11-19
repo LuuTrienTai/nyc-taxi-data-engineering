@@ -8,3 +8,6 @@ backups/
 dbt/target/
 dbt/logs/
 .pytest_cache/
+
+# macOS metadata
+.DS_Store
