@@ -49,3 +49,7 @@ Bước chấp nhận trước buổi demo: chạy `scripts.integration_check` t
 ## Giới hạn vận hành
 
 Thiết kế dành cho demo môn học trên máy local. Audit run có thể còn `running` nếu process bị kill cưỡng bức; đối chiếu Airflow logs để xác định run bị gián đoạn. Không chạy `--force` đồng thời với pipeline khác trên cùng Bronze. Nguồn Bronze là cache cập nhật có chủ đích, chưa có lịch sử nhiều phiên bản object store. Mật khẩu mặc định chỉ dùng local, Metabase H2 chỉ phục vụ demo. Không có SLA dữ liệu/thời gian xử lý được đo trên máy người dùng.
+
+## Metabase Configuration
+*   **Command:** `python scripts/setup_metabase_reader.py`
+*   **Result:** Created `metabase_reader` user with `SELECT` only access to `warehouse` and `marts` schemas. This fulfills the requirement to test a read-only reader account without risking data modification.
