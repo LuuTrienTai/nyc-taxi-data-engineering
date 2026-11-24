@@ -1,80 +1,40 @@
-# Báo cáo Kiểm thử & Xác thực (M4 Validation Report)
+# Kiểm thử
 
-**Người thực hiện:** M4 - Hùng
-**Ngày cập nhật:** Tháng 11/2026
-**Môi trường:** Docker Compose (PostgreSQL 16, Python 3.11)
-**Kiến trúc:** Bronze (Disk) → Silver (Transient RAM) → Gold (PostgreSQL)
+| Kiểm tra | Kết quả trên fixture |
+| --- | --- |
+| Python | 14 test hiện có chạy qua, gồm schema, dữ liệu sai và biên DST của weather/Silver. |
+| PostgreSQL | Nạp tháng 01–03/2025 vào ba partitions. Mỗi tháng từ 1.203 dòng tạo 1.200 facts và 3 bản ghi Quarantine. Tổng phí tháng 01 là 34.601,04 USD và khớp cả ba marts. |
+| Chạy lại | Đổi batch size rồi chạy lại tháng 01. Count và doanh thu giữ nguyên. Trip trùng nằm ở batch khác vẫn bị phát hiện. |
+| Rollback | Mô phỏng lỗi sau COPY đầu tiên. Audit ghi `failed`, fact/marts trước đó vẫn đối soát đúng. |
+| Toàn bộ dòng invalid | Quarantine lưu 1.203 bản ghi và trạng thái run là `failed`. Gold cũ vẫn đối soát đúng. |
+| Backup và restore | Dump PostgreSQL, khôi phục vào DB mới và xác nhận tháng 01 vẫn đối soát. |
+| dbt | 3 views và 7 data tests chạy thành công. |
+| Airflow | DAG được parse thành công, ba task chạy qua với `dag.test()` và PostgreSQL warehouse. |
+| Web | API đọc được counts, mart và dimension. Kiểm tra tương tác lọc, chart, drill-down, Quarantine và phân trang trên DOM với API/PostgreSQL đang chạy. Dashboard role không có quyền xóa fact. |
 
----
+Môi trường kiểm thử chạy PostgreSQL cục bộ và fixture. Docker Desktop, tải nguồn thật qua Internet và giao diện Chromium trực quan cần xác nhận ở máy chạy demo.
 
-## 1. Tổng quan Kiến trúc & Trạng thái Hệ thống
-Dự án đã được tái cấu trúc (refactor) toàn diện sang mô hình Data Warehouse chuẩn mực. Lớp Staging và Silver lưu trữ vật lý đã được loại bỏ hoàn toàn. 
-*   **Bronze Layer:** Lưu trữ dữ liệu gốc (Parquet/JSON/CSV) trên ổ cứng.
-*   **Silver Layer:** Dữ liệu được làm sạch và xử lý logic hoàn toàn trong RAM (Pandas DataFrame) theo từng batch 50,000 dòng. Không ghi file hay tạo bảng vật lý.
-*   **Gold Layer:** Chứa dữ liệu phân tích cuối cùng trong schema `gold`, bao gồm: `gold.fact_trip`, `gold.dim_zone`, `gold.dim_weather_hour`, và 3 bảng aggregate (`agg_daily_demand`, `agg_zone_demand`, `agg_hourly_weather`).
+## Lặp lại các bước chính
 
----
+Chạy trong project fixture đã nạp tháng 01 từ [hướng dẫn demo](DEMO_VI.md).
 
-## 2. Kết quả Chạy Pipeline (M2 & M3)
-Pipeline được kích hoạt thông qua Docker runner để đảm bảo tính nhất quán của môi trường.
+```bash
+docker compose run --rm runner python -m pytest -q
+docker compose run --rm runner dbt build --project-dir dbt --profiles-dir dbt
+docker compose run --rm -e DATA_DIR=/opt/project/data/demo runner python -m src.pipeline --month 2025-01 --skip-download
+docker compose run --rm runner python -m src.verify --month 2025-01
+```
 
-**Lệnh chạy:**
-    docker compose run --rm runner python -m src.pipeline --month 2025-01
+Để demo rollback, chạy lệnh đầu dưới đây. Lệnh đó phải kết thúc với lỗi mô phỏng. Lệnh verify kế tiếp vẫn phải PASS.
 
-**Kết quả thực tế:**
-*   Dữ liệu được tải và xử lý thành công.
-*   Lớp Gold đã ghi nhận **3,251,618** dòng chuyến xe hợp lệ cho tháng 01/2025.
-*   Các chuyến xe không hợp lệ (lỗi tọa độ, thời gian, giá cước âm) đã được đưa vào bảng `audit.rejections` với lý do cụ thể.
+```bash
+docker compose run --rm -e DATA_DIR=/opt/project/data/demo runner python -m src.pipeline --month 2025-01 --skip-download --fail-after-batch
+docker compose run --rm runner python -m src.verify --month 2025-01
+docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < docs/demo_checks.sql
+```
 
----
+Chạy benchmark trên dữ liệu thật để xem PostgreSQL thực thi hai truy vấn tương đương. Thời gian phụ thuộc dữ liệu, máy và trạng thái cache.
 
-## 3. Kết quả Kiểm thử Độc lập (M4 Verification)
-Script `src/verify.py` được viết bởi M4 để kiểm chứng độc lập tính toàn vẹn của dữ liệu đầu ra (không phụ thuộc vào M3). Script kiểm tra 3 điều kiện:
-1. Bảng `gold.fact_trip` phải tồn tại và có dữ liệu.
-2. Không được tồn tại bất kỳ bảng Staging/Silver nào trong DB.
-3. Tổng doanh thu từ Fact phải khớp tuyệt đối với bảng Aggregate.
-
-**Lệnh chạy:**
-    docker compose run --rm runner python -m src.verify --month 2025-01
-
-**Kết quả thực tế:**
-    === Starting M4 Independent Verification for 2025-01 ===
-    [PASS] gold.fact_trip exists with 3,251,618 rows for 2025-01.
-    [PASS] No Silver or staging tables found in Postgres.
-    [PASS] Fact and Mart revenue reconciled: $88,071,527.78
-
-    === All M4 Verification Checks Passed! ===
-
----
-
-## 4. Đối chiếu Chỉ số Dashboard với SQL Trực tiếp
-Để đảm bảo Dashboard hiển thị đúng số liệu, M4 đã đối chiếu trực tiếp các KPI trên Dashboard với kết quả truy vấn SQL từ Database.
-
-| KPI trên Dashboard | Câu lệnh SQL đối chiếu | Kết quả SQL thực tế | Trạng thái |
-| :--- | :--- | :--- | :--- |
-| **Valid Trips** | `SELECT COUNT(*) FROM gold.fact_trip WHERE data_month = '2025-01-01';` | `3,251,618` | KHỚP |
-| **Total Revenue** | `SELECT SUM(total_amount) FROM gold.fact_trip WHERE data_month = '2025-01-01';` | `$88,071,527.78` | KHỚP |
-| **Top Zones** | `SELECT pickup_location_id, COUNT(*) FROM gold.fact_trip GROUP BY 1 ORDER BY 2 DESC LIMIT 1;` | `Zone 132 (JFK)` | KHỚP |
-| **Daily Demand** | `SELECT pickup_datetime::date, COUNT(*) FROM gold.fact_trip GROUP BY 1;` | `Biểu đồ line chart` | KHỚP |
-
----
-
-## 5. Kiểm tra Tài khoản Metabase Reader (Read-only)
-Theo yêu cầu của PDF, tài khoản `metabase_reader` phải đọc được dữ liệu Gold nhưng không được phép sửa đổi.
-
-**Lệnh kiểm tra quyền Đọc (SELECT):**
-    SELECT COUNT(*) FROM gold.fact_trip;
-    -- Kết quả: Trả về 3,251,618 (Thành công)
-
-**Lệnh kiểm tra quyền Ghi/Xóa (DELETE) - Dự kiến sẽ bị từ chối:**
-    DELETE FROM gold.fact_trip;
-    -- Kết quả: ERROR: permission denied for table fact_trip (Thành công - Đã chặn đúng)
-
----
-
-## 6. Kiểm tra Xử lý Lỗi (Edge Cases)
-*   **Tháng không có dữ liệu:** Khi chọn tháng không tồn tại trên Dashboard, giao diện hiển thị "No data for this month" và không giữ lại số liệu của tháng trước đó.
-*   **Re-run (Idempotency):** Chạy lại pipeline cho cùng một tháng sẽ xóa dữ liệu cũ của tháng đó trong transaction và ghi đè bằng dữ liệu mới. Số lượng dòng và doanh thu không bị nhân đôi (đã được kiểm chứng qua `audit.pipeline_runs`).
-
----
-*Báo cáo được tổng hợp bởi M4 dựa trên kết quả chạy thực tế tại local (Docker Compose).*
+```bash
+docker compose run --rm runner python -m scripts.benchmark --month 2025-01
+```

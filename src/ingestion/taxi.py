@@ -17,12 +17,12 @@ from src.config import (
     BRONZE_ZONES_DIR,
     TLC_TRIP_BASE_URL,
     TLC_ZONE_LOOKUP_URL,
-    ensure_directories,
+    bronze_lock,
 )
 
 
 def validate_month_arg(month_str: str) -> str:
-    if not re.match(r"^\d{4}-(0[1-9]|1[0-2])$", month_str):
+    if not re.fullmatch(r"^\d{4}-(0[1-9]|1[0-2])$", month_str):
         raise ValueError(f"Invalid --month format '{month_str}'. Expected YYYY-MM.")
     return month_str
 
@@ -48,7 +48,7 @@ def record_audit_log(dataset: str, target_path: Path, sha256_hex: str, row_count
     retry=retry_if_exception_type((httpx.HTTPError, IOError)),
     reraise=True,
 )
-def stream_download_atomic(url: str, dest_path: Path) -> str:
+def stream_download_atomic(url: str, dest_path: Path, validate=None) -> str:
     """
     Streams file from URL to a temporary .tmp file, computes SHA-256,
     and performs an atomic rename only after complete download.
@@ -69,6 +69,8 @@ def stream_download_atomic(url: str, dest_path: Path) -> str:
         if not tmp_path.exists() or tmp_path.stat().st_size == 0:
             raise IOError(f"Downloaded file is empty: {tmp_path}")
 
+        if validate is not None:
+            validate(tmp_path)
         os.replace(tmp_path, dest_path)
         return sha256_hash.hexdigest()
 
@@ -104,17 +106,14 @@ def ingest_taxi_month(month: str, force: bool = False) -> Path:
         return dest_path
 
     print(f"[INFO] Downloading NYC Yellow Taxi data for {month} from {url}...")
-    sha256_hex = stream_download_atomic(url, dest_path)
-
-    # Verify Parquet footer & row count before declaring success
-    try:
-        meta = pq.read_metadata(dest_path)
-        row_count = meta.num_rows
+    def row_count_of(path):
+        row_count = pq.read_metadata(path).num_rows
         if row_count == 0:
-            raise ValueError(f"Parquet file {dest_path} has 0 rows.")
-    except Exception as e:
-        dest_path.unlink(missing_ok=True)
-        raise RuntimeError(f"Corrupted Parquet file downloaded for {month}: {e}") from e
+            raise IOError(f'Parquet file has no rows: {path}')
+        return row_count
+
+    sha256_hex = stream_download_atomic(url, dest_path, validate=row_count_of)
+    row_count = row_count_of(dest_path)
 
     record_audit_log("bronze_taxi", dest_path, sha256_hex, row_count)
     print(f"[OK] Saved {dest_path} ({row_count:,} rows, SHA-256: {sha256_hex[:12]}...)")
@@ -128,10 +127,10 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        ensure_directories()
         month = validate_month_arg(args.month)
-        ingest_zones(force=args.force)
-        ingest_taxi_month(month=month, force=args.force)
+        with bronze_lock():
+            ingest_zones(force=args.force)
+            ingest_taxi_month(month=month, force=args.force)
         return 0
     except Exception as exc:
         print(f"[ERROR] Taxi ingestion failed for month={args.month}: {exc}", file=sys.stderr)

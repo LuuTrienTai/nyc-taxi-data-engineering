@@ -1,7 +1,104 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>NYC Taxi Analytics</title>
-<style>*{box-sizing:border-box}body{margin:0;background:#f1f5f9;color:#162b3f;font:16px system-ui}header{background:#102e40;color:white;padding:32px max(24px,calc((100vw - 1180px)/2))}h1{margin:12px 0;font-size:34px}header p{color:#a8c5d3}.tag{font:12px monospace;color:#7ce1cb;letter-spacing:2px}main{max-width:1180px;margin:auto;padding:26px}.toolbar{display:flex;align-items:center;gap:12px;margin-bottom:24px}select,button{font:inherit;padding:10px;border:1px solid #cbd5e1;border-radius:8px;background:white}button{cursor:pointer}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}.card{padding:24px;background:white;border:1px solid #e0e8ee;border-radius:14px;margin-bottom:20px}.kpi{font-size:36px;font-weight:750;margin:8px 0}.muted{color:#607489;font-size:13px}h2{font-size:19px;margin-top:0}svg{width:100%;height:220px}table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:12px 6px;border-bottom:1px solid #edf1f5}th{color:#607489}.error{color:#b42318}footer{font-size:13px;color:#607489;padding:8px 0 24px}@media(max-width:760px){.grid{grid-template-columns:1fr}main{padding:16px}h1{font-size:26px}}</style>
-<header><div class="tag">NYC / DATA ENGINEERING</div><h1>Taxi demand & revenue</h1><p>Bronze stored → Silver in memory → Gold analytics</p></header><main><div class="toolbar"><label for="month">Data month</label><select id="month"><option>2025-01</option></select><button id="refresh">Refresh</button><span id="status" class="muted"></span></div>
-<div class="grid"><div class="card"><span class="muted">VALID TRIPS</span><div id="trips" class="kpi">—</div><span class="muted">Accepted by the project quality rules</span></div><div class="card"><span class="muted">TOTAL AMOUNT (USD)</span><div id="revenue" class="kpi">—</div><span class="muted">Passenger charges; not profit or net driver earnings</span></div></div>
-<div class="card"><h2>Daily pickup demand</h2><svg id="chart" viewBox="0 0 1000 220" role="img" aria-label="Daily trip counts"></svg><div class="muted">Hover over a bar for the date and trip count.</div></div>
-<div class="grid"><div class="card"><h2>Top pickup zones</h2><table><thead><tr><th>Zone</th><th>Trips</th><th>Revenue</th></tr></thead><tbody id="zones"></tbody></table></div><div class="card"><h2>Weather & hourly demand</h2><table><thead><tr><th>Condition</th><th>Hours</th><th>Trips / hour</th></tr></thead><tbody id="weather"></tbody></table><p class="muted">Includes zero-trip hours. One reference weather location; correlation does not establish causation. Repeated DST hours are combined.</p></div></div><footer>Demo fixtures are synthetic. Load official TLC data before presenting empirical findings. No Silver files or staging tables are required.</footer></main>
-<script>const $=id=>document.getElementById(id),num=x=>Number(x).toLocaleString('en-US'),money=x=>Number(x).toLocaleString('en-US',{style:'currency',currency:'USD'});function table(id,rows){$(id).replaceChildren();for(const row of rows){let tr=document.createElement('tr');for(const v of row){let td=document.createElement('td');td.textContent=v;tr.append(td)}$(id).append(tr)}}async function load(){try{$('status').className='muted';$('status').textContent='Loading…';let m=$('month').value,r=await fetch('/api?month='+encodeURIComponent(m));if(!r.ok)throw Error('Data unavailable. Run the pipeline, then refresh.');let d=await r.json();$('month').replaceChildren(...[...new Set([m,...d.months])].sort().map(x=>{let o=document.createElement('option');o.textContent=x;o.value=x;return o}));$('month').value=m;$('trips').textContent=num(d.kpi[0]);$('revenue').textContent=money(d.kpi[1]);table('zones',d.zones.map(x=>[x[0],num(x[2]),money(x[3])]));table('weather',d.weather.map(x=>[x[0],num(x[1]),num(x[2])]));let svg=$('chart');svg.replaceChildren();let max=Math.max(1,...d.daily.map(x=>Number(x[1]))),w=960/Math.max(1,d.daily.length);d.daily.forEach((x,i)=>{let bar=document.createElementNS('http://www.w3.org/2000/svg','rect'),h=Number(x[1])/max*180;for(let [k,v] of Object.entries({x:20+i*w,y:190-h,width:Math.max(1,w-3),height:h,fill:'#108c86',rx:3}))bar.setAttribute(k,v);let t=document.createElementNS('http://www.w3.org/2000/svg','title');t.textContent=x[0]+': '+num(x[1])+' trips';bar.append(t);svg.append(bar)});$('status').textContent=d.daily.length?'Updated '+new Date().toLocaleTimeString():'No data for this month'}catch(e){$('status').className='error';$('status').textContent=e.message}}$('month').onchange=load;$('refresh').onclick=load;load();</script></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#181c22">
+  <title>NYC Taxi Analytics</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#analytics"><span class="brand-icon" aria-hidden="true"></span><span>NYC Taxi<small>Analytics platform</small></span></a>
+    <nav aria-label="Workspace">
+      <a href="#analytics" id="nav-analytics">Analytics</a>
+      <a href="#pipeline" id="nav-pipeline">Pipeline explorer</a>
+      <a href="#gold" id="nav-gold">Gold warehouse</a>
+    </nav>
+    <div class="sidebar-foot">Yellow Taxi · New York City</div>
+  </aside>
+
+  <main>
+    <header class="top">
+      <div><p class="eyebrow" id="section-label">NYC TLC / Yellow Taxi</p><h1 id="heading">Taxi demand & revenue</h1></div>
+      <label class="month-control">Data month<select id="month" disabled><option>Loading…</option></select></label>
+    </header>
+    <p id="error" class="notification error" role="alert" hidden></p>
+    <p id="empty" class="notification" hidden>Load a month with the pipeline, then refresh this page.</p>
+    <p id="synthetic" class="notification" hidden>Synthetic demo data. Figures are for demonstration.</p>
+    <p id="loading" class="muted" role="status" hidden>Loading data…</p>
+
+    <section id="analytics" hidden>
+      <div class="filters">
+        <label>Borough<select id="borough"><option value="">All boroughs</option></select></label>
+        <label>Location role<select id="location-role"><option value="pickup">Pickup</option><option value="dropoff">Drop-off</option></select></label>
+        <label>Zone<select id="zone"><option value="">All zones</option></select></label>
+        <label>From date<input id="date-from" type="date"></label>
+        <label>To date<input id="date-to" type="date"></label>
+        <label>Weather<select id="weather"><option value="all">All weather</option><option value="dry">Dry</option><option value="wet">Rain / snow</option></select></label>
+        <label>Pickup hour<select id="hour"><option value="">All hours</option></select></label>
+        <button id="reset" class="quiet" type="button">Reset filters</button>
+      </div>
+      <div class="kpis" id="kpis"></div>
+      <article class="panel">
+        <div class="panel-head">
+          <div><h2 id="chart-title">Daily pickup demand</h2><p class="muted">Pickup time · America/New_York</p></div>
+          <div class="chart-controls">
+            <label>Metric<select id="metric"><option value="trips">Trips</option><option value="revenue">Revenue</option></select></label>
+            <label>Group by<select id="interval"><option value="day">Day</option><option value="hour">Hour of day</option><option value="weekday">Weekday vs weekend</option></select></label>
+          </div>
+        </div>
+        <div class="chart-scroll"><div id="chart" class="chart"></div></div>
+        <p id="chart-detail" class="chart-detail" aria-live="polite"></p>
+      </article>
+      <div class="grid split">
+        <article class="panel">
+          <div class="panel-head"><div><h2 id="zone-heading">Pickup zones</h2><p class="muted">Select a zone to filter the dashboard.</p></div>
+            <label>Rank by<select id="ranking"><option value="trips">Trips</option><option value="revenue">Revenue</option></select></label>
+          </div>
+          <div id="zones" class="table-scroll"></div>
+        </article>
+        <article class="panel">
+          <h2>Demand by weather</h2>
+          <p class="muted">Trips per local hour, including hours with zero pickups.</p>
+          <div id="weather-comparison"></div>
+          <p class="muted chart-detail">Weather observations represent a Manhattan reference point.</p>
+        </article>
+      </div>
+      <article class="panel">
+        <div class="panel-head"><div><h2>Fare by trip distance</h2><p class="muted">Average base fare by distance band, using matching trip records.</p></div>
+          <button id="distance-load" class="quiet">Calculate</button>
+        </div>
+        <div id="distance" class="table-scroll" aria-live="polite"></div>
+      </article>
+    </section>
+
+    <section id="pipeline" hidden>
+      <div class="panel pipeline-intro">
+        <div><h2>Monthly processing run</h2><p id="run-summary" class="muted"></p></div>
+        <label>Run history<select id="run"></select></label>
+      </div>
+      <div class="stages" id="stages" aria-label="Pipeline stages">
+        <button type="button" data-stage="bronze"><span class="bronze-mark"></span><b>Bronze</b><small>Source files</small><strong id="bronze-count">—</strong></button>
+        <button type="button" data-stage="silver"><span class="silver-mark"></span><b>Silver</b><small>Validated in memory</small><strong id="silver-count">—</strong></button>
+        <button type="button" data-stage="gold"><span class="gold-mark"></span><b>Gold</b><small>Warehouse rows</small><strong id="gold-count">—</strong></button>
+        <button type="button" data-stage="quarantine"><span class="quarantine-mark"></span><b>Quarantine</b><small>Rejected records</small><strong id="rejected-count">—</strong></button>
+      </div>
+      <article class="panel" id="stage-content" aria-live="polite"></article>
+    </section>
+
+    <section id="gold" hidden>
+      <article class="panel">
+        <div class="panel-head">
+          <div><h2>Star schema browser</h2><p class="muted" id="dataset-description"></p></div>
+          <label>Gold table<select id="dataset"></select></label>
+        </div>
+        <div id="gold-data" class="table-scroll" aria-live="polite"></div>
+        <div class="page-controls"><button type="button" class="quiet" id="gold-back">Previous</button><button type="button" class="quiet" id="gold-next">Next</button></div>
+      </article>
+    </section>
+    <footer>NYC TLC trip records · Taxi Zone Lookup · Open-Meteo hourly weather</footer>
+  </main>
+</body>
+</html>

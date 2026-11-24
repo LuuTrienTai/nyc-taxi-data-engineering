@@ -1,4 +1,4 @@
-# Optional Week 2 Airflow services. Always use together with compose.yaml.
+# Airflow services. Use with compose.yaml and the airflow profile.
 services:
   airflow-init:
     build:
@@ -8,13 +8,13 @@ services:
     profiles: [airflow]
     restart: 'no'
     depends_on:
-      postgres:
-        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
     environment: &airflow-env
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__LOAD_EXAMPLES: 'False'
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'True'
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow_meta
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://taxi_airflow:${AIRFLOW_DB_PASSWORD}@postgres:5432/airflow_meta
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:?Set AIRFLOW_SECRET_KEY in .env}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: '5432'
@@ -23,15 +23,18 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       AIRFLOW__CORE__DAGS_FOLDER: /opt/project/airflow/dags
       PYTHONPATH: /opt/project
+      TAXI_MONTH_LAG: ${TAXI_MONTH_LAG:-3}
+      DATA_DIR: ${AIRFLOW_DATA_DIR:-/opt/project/data}
       AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-admin}
       AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?Set AIRFLOW_ADMIN_PASSWORD in .env}
     volumes: &airflow-volumes
-      - ./:/opt/project
+      - taxi_data:/opt/project/data
       - airflow_logs:/opt/airflow/logs
     command:
       - bash
       - -ec
       - |
+        set -o pipefail
         airflow db migrate
         if ! airflow users list --output json | python -c 'import json,sys,os; sys.exit(not any(u["username"]==os.environ["AIRFLOW_ADMIN_USER"] for u in json.load(sys.stdin)))'; then
           airflow users create --username "$${AIRFLOW_ADMIN_USER:-admin}" --password "$${AIRFLOW_ADMIN_PASSWORD}" --firstname Local --lastname Admin --role Admin --email local-admin@example.invalid

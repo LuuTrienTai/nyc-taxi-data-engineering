@@ -6,7 +6,7 @@ from src.pipeline import prepare_dimensions
 class DimensionTests(unittest.TestCase):
     def setup_data(self,month,missing=False):
         start=pd.Timestamp(month+'-01');end=start+pd.offsets.MonthBegin(1)
-        utc=pd.date_range(start.tz_localize('UTC'),(end+pd.Timedelta(days=1)).tz_localize('UTC'),freq='h',inclusive='left')
+        utc=pd.date_range(start, end + pd.Timedelta(days=1), tz='UTC', freq='h', inclusive='left')
         weather=pd.DataFrame({'observation_time_utc':utc.strftime('%Y-%m-%dT%H:%M'),'temperature_2m':5.,'precipitation':0.})
         if missing:weather=weather.drop(index=10)
         return weather

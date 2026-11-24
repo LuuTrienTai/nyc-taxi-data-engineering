@@ -2,9 +2,7 @@ import argparse
 import calendar
 import datetime
 import hashlib
-import json
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -14,12 +12,11 @@ import pyarrow.parquet as pq
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 
 from src.config import (
-    AUDIT_LOG_PATH,
     BRONZE_WEATHER_DIR,
     NYC_LATITUDE,
     NYC_LONGITUDE,
     OPEN_METEO_ARCHIVE_URL,
-    ensure_directories,
+    bronze_lock,
 )
 from src.ingestion.taxi import record_audit_log, validate_month_arg
 
@@ -40,7 +37,7 @@ def get_month_date_range(month_str: str) -> tuple[str, str, int]:
     retry=retry_if_exception_type((httpx.HTTPError, IOError)),
     reraise=True,
 )
-def fetch_open_meteo_month(start_date: str, end_date: str) -> dict:
+def fetch_open_meteo_month(start_date: str, end_date: str) -> tuple[dict, bytes]:
     """
     Requests historical hourly weather in UTC from Open-Meteo.
     Requesting in UTC avoids DST duplicate/missing hour ambiguity in the raw stream;
@@ -62,7 +59,7 @@ def fetch_open_meteo_month(start_date: str, end_date: str) -> dict:
     if "hourly" not in payload or "time" not in payload["hourly"]:
         raise ValueError("Malformed Open-Meteo response: missing 'hourly.time' key.")
 
-    return payload
+    return payload, response.content
 
 
 def ingest_weather_month(month: str, force: bool = False) -> Path:
@@ -76,14 +73,7 @@ def ingest_weather_month(month: str, force: bool = False) -> Path:
 
     start_date, end_date, expected_hours = get_month_date_range(month)
     print(f"[INFO] Fetching Open-Meteo hourly weather for {month} ({start_date} to {end_date})...")
-    payload = fetch_open_meteo_month(start_date, end_date)
-
-    # Save raw JSON atomically
-    tmp_json = json_path.with_suffix(".json.tmp")
-    raw_bytes = json.dumps(payload, indent=2).encode("utf-8")
-    with open(tmp_json, "wb") as f:
-        f.write(raw_bytes)
-    os.replace(tmp_json, json_path)
+    payload, raw_bytes = fetch_open_meteo_month(start_date, end_date)
 
     # Convert hourly arrays to a structured Bronze Parquet table atomically
     hourly = payload["hourly"]
@@ -109,6 +99,9 @@ def ingest_weather_month(month: str, force: bool = False) -> Path:
 
     tmp_parquet = parquet_path.with_suffix(".parquet.tmp")
     pq.write_table(table, tmp_parquet, compression="snappy")
+    tmp_json = json_path.with_suffix(".json.tmp")
+    tmp_json.write_bytes(raw_bytes)
+    os.replace(tmp_json, json_path)
     os.replace(tmp_parquet, parquet_path)
 
     sha256_hex = hashlib.sha256(parquet_path.read_bytes()).hexdigest()
@@ -124,9 +117,9 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        ensure_directories()
         month = validate_month_arg(args.month)
-        ingest_weather_month(month=month, force=args.force)
+        with bronze_lock():
+            ingest_weather_month(month=month, force=args.force)
         return 0
     except Exception as exc:
         print(f"[ERROR] Weather ingestion failed for month={args.month}: {exc}", file=sys.stderr)

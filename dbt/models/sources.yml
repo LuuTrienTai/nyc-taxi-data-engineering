@@ -5,18 +5,27 @@ sources:
     tables:
       - name: fact_trip
         columns:
-          - name: source_row
-            tests: [not_null]
+          - name: trip_id
+            data_tests: [not_null]
           - name: pickup_location_id
-            tests:
+            data_tests:
               - relationships:
-                  arguments:
-                    to: source('gold', 'dim_zone')
-                    field: location_id
+                  arguments: {to: "source('gold', 'dim_zone')", field: location_id}
+          - name: dropoff_location_id
+            data_tests:
+              - relationships:
+                  arguments: {to: "source('gold', 'dim_zone')", field: location_id}
+          - name: pickup_date
+            data_tests:
+              - relationships:
+                  arguments: {to: "source('gold', 'dim_date')", field: date_key}
+          - name: pickup_hour
+            data_tests:
+              - relationships:
+                  arguments: {to: "source('gold', 'dim_weather')", field: hour_local}
       - name: dim_zone
-        columns:
-          - name: location_id
-            tests: [unique, not_null]
-      - name: agg_daily_demand
-      - name: agg_zone_demand
-      - name: agg_hourly_weather
+      - name: dim_date
+      - name: dim_weather
+      - name: agg_hourly_zone
+      - name: agg_daily_trips
+      - name: agg_zone_revenue

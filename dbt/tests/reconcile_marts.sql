@@ -1,4 +1,15 @@
-with f as (select data_month,count(*) n,sum(total_amount) revenue from {{ source('gold','fact_trip') }} group by 1),
-a as (select data_month,sum(trip_count) n,sum(total_revenue) revenue from {{ source('gold','agg_daily_demand') }} group by 1)
-select coalesce(f.data_month,a.data_month) as data_month from f full join a using(data_month)
-where f.n is distinct from a.n or f.revenue is distinct from a.revenue
+WITH facts AS (
+    SELECT data_month, count(*) AS trips, sum(total_amount) AS revenue
+    FROM {{ source('gold','fact_trip') }}
+    GROUP BY data_month
+)
+{% for mart in ('agg_hourly_zone', 'agg_daily_trips', 'agg_zone_revenue') %}
+SELECT '{{ mart }}' AS mart, coalesce(facts.data_month, m.data_month) AS data_month
+FROM facts FULL JOIN (
+    SELECT data_month, sum(trip_count) AS trips, sum(total_revenue) AS revenue
+    FROM {{ source('gold',mart) }}
+    GROUP BY data_month
+) m USING (data_month)
+WHERE facts.trips IS DISTINCT FROM m.trips OR facts.revenue IS DISTINCT FROM m.revenue
+{% if not loop.last %}UNION ALL{% endif %}
+{% endfor %}

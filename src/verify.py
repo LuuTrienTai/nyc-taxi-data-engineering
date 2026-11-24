@@ -1,66 +1,49 @@
-"""M4 Independent Verification: Checks Gold schema integrity."""
-import os
-import sys
+"""Independently reconcile committed Gold and Quarantine with the run audit."""
+import argparse
+from datetime import date
+
 import psycopg
+from psycopg import sql
 
-def verify_month(month: str):
-    print(f"=== Starting M4 Independent Verification for {month} ===")
-    month_date = f"{month}-01"
-    
-    try:
-        conn = psycopg.connect(
-            host=os.getenv("POSTGRES_HOST", "postgres"),
-            port=int(os.getenv("POSTGRES_PORT", "5432")),
-            user=os.getenv("POSTGRES_USER", "taxi_admin"),
-            password=os.getenv("POSTGRES_PASSWORD", "taxi_local_demo_2026"),
-            dbname=os.getenv("POSTGRES_DB", "nyc_taxi")
-        )
-        cur = conn.cursor()
+from src.config import connection_kwargs
+from src.ingestion.taxi import validate_month_arg
 
-        # 1. Check fact_trip exists and has rows
-        cur.execute("SELECT to_regclass('gold.fact_trip')")
-        if not cur.fetchone()[0]:
-            print("[FAIL] gold.fact_trip does not exist!")
-            sys.exit(1)
-            
-        cur.execute("SELECT COUNT(*) FROM gold.fact_trip WHERE data_month = %s", (month_date,))
-        count = cur.fetchone()[0]
-        print(f"[PASS] gold.fact_trip exists with {count:,} rows for {month}.")
-        if count == 0:
-            print("[FAIL] fact_trip is empty for this month!")
-            sys.exit(1)
+MARTS = ('agg_hourly_zone', 'agg_daily_trips', 'agg_zone_revenue')
 
-        # 2. Check No Silver/Staging Tables
-        cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema IN ('staging', 'public') AND table_name LIKE '%taxi%'")
-        silver_tables = cur.fetchall()
-        if silver_tables:
-            print(f"[FAIL] Found unexpected staging/Silver tables: {silver_tables}")
-            sys.exit(1)
-        print("[PASS] No Silver or staging tables found in Postgres.")
 
-        # 3. Reconcile Fact vs Aggregates
-        cur.execute("SELECT SUM(total_amount) FROM gold.fact_trip WHERE data_month = %s", (month_date,))
-        fact_revenue = cur.fetchone()[0]
-        
-        cur.execute("SELECT SUM(total_revenue) FROM gold.agg_daily_demand WHERE data_month = %s", (month_date,))
-        mart_revenue = cur.fetchone()[0]
-        
-        if abs(float(fact_revenue) - float(mart_revenue)) > 0.01:
-            print(f"[FAIL] Revenue mismatch! Fact: {fact_revenue}, Mart: {mart_revenue}")
-            sys.exit(1)
-        print(f"[PASS] Fact and Mart revenue reconciled: ${fact_revenue:,.2f}")
-        
-        print("\n=== All M4 Verification Checks Passed! ===")
-        conn.close()
-        return 0
-        
-    except Exception as e:
-        print(f"[ERROR] Verification failed: {e}")
-        return 1
+def reconcile(conn, month, run_id, read, loaded, rejected):
+    facts = conn.execute("""
+        SELECT count(*), sum(total_amount) FROM gold.fact_trip WHERE data_month = %s
+    """, (month,)).fetchone()
+    bad = conn.execute("""
+        SELECT count(*) FROM quarantine.rejected_trip WHERE run_id = %s
+    """, (run_id,)).fetchone()[0]
+    if not loaded or facts[0] != loaded or bad != rejected or read != loaded + rejected:
+        raise ValueError(f'Run {run_id}: Bronze, Gold and Quarantine row counts do not reconcile')
+    for table in MARTS:
+        totals = conn.execute(sql.SQL("""
+            SELECT sum(trip_count), sum(total_revenue) FROM {} WHERE data_month = %s
+        """).format(sql.Identifier('gold', table)), (month,)).fetchone()
+        if totals != facts:
+            raise ValueError(f'Run {run_id}: {table} count or revenue differs from fact_trip')
+    return facts
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--month", required=True, help="YYYY-MM")
-    args = parser.parse_args()
-    sys.exit(verify_month(args.month))
+
+def verify_month(month):
+    start = date.fromisoformat(validate_month_arg(month) + '-01')
+    with psycopg.connect(**connection_kwargs()) as conn:
+        conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+        run = conn.execute("""
+            SELECT run_id, rows_read, rows_loaded, rows_rejected FROM audit.pipeline_runs
+            WHERE data_month = %s AND status = 'success' ORDER BY run_id DESC LIMIT 1
+        """, (start,)).fetchone()
+        if run is None:
+            raise ValueError(f'No successful load for {month}')
+        count, revenue = reconcile(conn, start, *run)
+    print(f'[PASS] {month} · run {run[0]} · {count:,} trips · ${revenue:,.2f} · all three marts reconcile')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--month', required=True)
+    verify_month(parser.parse_args().month)

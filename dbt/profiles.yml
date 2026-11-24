@@ -8,5 +8,5 @@ nyc_taxi_gold:
       user: "{{ env_var('POSTGRES_USER', 'taxi_admin') }}"
       password: "{{ env_var('POSTGRES_PASSWORD') }}"
       dbname: "{{ env_var('POSTGRES_DB', 'nyc_taxi') }}"
-      schema: gold
+      schema: analytics
       threads: 2

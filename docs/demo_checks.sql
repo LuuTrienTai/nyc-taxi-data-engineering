@@ -1,16 +1,21 @@
--- No Silver/staging tables: expected 0 rows
-SELECT table_schema,table_name FROM information_schema.tables
-WHERE table_schema IN ('staging','silver');
--- Fact/marts and audit results
-SELECT data_month,count(*),sum(total_amount) FROM gold.fact_trip GROUP BY 1;
-SELECT * FROM audit.pipeline_runs ORDER BY run_id DESC LIMIT 10;
-SELECT run_id,reason,count(*) FROM audit.rejections GROUP BY 1,2 ORDER BY 1 DESC;
--- Counts: values must match by month
-SELECT f.data_month,f.n fact_count,a.n mart_count FROM
- (SELECT data_month,count(*) n FROM gold.fact_trip GROUP BY 1) f JOIN
- (SELECT data_month,sum(trip_count) n FROM gold.agg_daily_demand GROUP BY 1) a USING(data_month);
--- Freshness is pipeline execution time, distinct from dataset month
-SELECT data_month,max(finished_at) last_success FROM audit.pipeline_runs WHERE status='success' GROUP BY 1;
--- Verify analyst can read but cannot write
-SELECT has_table_privilege('metabase_reader','gold.fact_trip','SELECT') can_read,
- has_table_privilege('metabase_reader','gold.fact_trip','INSERT') can_insert;
+SELECT data_month, run_id, status, rows_read, rows_loaded, rows_rejected, finished_at
+FROM audit.pipeline_runs ORDER BY run_id DESC LIMIT 12;
+
+SELECT q.run_id, q.reason, q.records
+FROM quarantine.rejection_summary q JOIN audit.pipeline_runs a USING (run_id)
+WHERE a.data_month = DATE '2025-01-01' ORDER BY q.run_id DESC, q.records DESC LIMIT 15;
+
+SELECT inhrelid::regclass AS monthly_partition
+FROM pg_inherits WHERE inhparent = 'gold.fact_trip'::regclass ORDER BY 1;
+
+SELECT 'fact_trip' AS dataset, count(*) AS trips, sum(total_amount) AS charges
+FROM gold.fact_trip WHERE data_month = DATE '2025-01-01'
+UNION ALL
+SELECT 'agg_hourly_zone', sum(trip_count), sum(total_revenue)
+FROM gold.agg_hourly_zone WHERE data_month = DATE '2025-01-01'
+UNION ALL
+SELECT 'agg_daily_trips', sum(trip_count), sum(total_revenue)
+FROM gold.agg_daily_trips WHERE data_month = DATE '2025-01-01'
+UNION ALL
+SELECT 'agg_zone_revenue', sum(trip_count), sum(total_revenue)
+FROM gold.agg_zone_revenue WHERE data_month = DATE '2025-01-01';
