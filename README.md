@@ -1,42 +1,39 @@
-# NYC Taxi — Bronze → transient Silver → Gold
+# NYC Taxi Analytics Platform
 
-Bản hoàn thiện từ starter, bỏ hoàn toàn staging và Silver persistence.
+Pipeline batch theo tháng cho NYC Yellow Taxi, Taxi Zone Lookup và Open-Meteo. Chạy bằng Docker Compose trên Mac hoặc Windows. Website truy vấn PostgreSQL qua API đọc. Dashboard so sánh pickup/drop-off, lọc khoảng ngày, nhóm weekday/weekend và phân tích demand theo nhiệt độ, lượng mưa, fare, distance, duration.
 
-- Bronze: taxi Parquet, zone CSV, weather JSON/Parquet trên disk.
-- Silver: DataFrame theo batch 50.000 dòng trong RAM; không ghi file/bảng trung gian.
-- Gold: PostgreSQL `gold.dim_zone`, `gold.dim_weather_hour`, `gold.fact_trip`, ba bảng aggregate.
-- Audit: trạng thái run, SHA-256 của nguồn taxi, số dòng và lý do loại theo source row. Đây là metadata vận hành, không phải Silver.
-- Dashboard tích hợp: http://localhost:8501. Metabase: http://localhost:3000.
-- Airflow tùy chọn: http://localhost:8080; chạy theo tháng truyền vào.
+- **Bronze** lưu các file nguồn và dấu vân tay SHA-256.
+- **Silver** đọc Parquet theo batch, chuẩn hóa, kiểm tra, nối khóa zone/date/weather và tạo mã chuyến. Website hiển thị mẫu trước và sau xử lý.
+- **Quarantine** lưu bản ghi bị loại, số dòng nguồn và lý do.
+- **Gold** có `fact_trip` phân vùng theo tháng, `dim_date`, `dim_zone`, `dim_weather` và ba marts đúng tên trên slide.
+- **Airflow** chạy theo lịch tháng hoặc chạy bù một tháng được chọn. **dbt** cung cấp SQL mô hình mart và kiểm thử warehouse.
 
-**Đọc [hướng dẫn demo tiếng Việt](docs/DEMO_VI.md) trước khi chạy.**
-Thiết kế chi tiết: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
-Kiểm thử thực tế và giới hạn: [VALIDATION.md](docs/VALIDATION.md).
+## Chạy dữ liệu thật
 
-## Khởi động nhanh với dữ liệu thật
-
-Cần Docker Desktop đang chạy, khoảng 6–8 GB RAM cấp cho Docker khi bật cả Airflow/Metabase. Chạy từ thư mục chứa compose.yaml:
+Mở Docker Desktop, giải nén ZIP và mở Terminal trong thư mục có `compose.yaml`. Nếu cổng web 8501 đã được dùng, đổi `WEB_PORT` trong `.env`. PostgreSQL chỉ truy cập qua mạng Docker nội bộ.
 
 ```bash
 cp .env.example .env
-docker compose build runner dashboard
-docker compose up -d --wait postgres
-docker compose run --rm runner python -m scripts.setup_services
+docker compose up -d --build dashboard
 docker compose run --rm runner python -m src.pipeline --month 2025-01
 docker compose run --rm runner python -m src.verify --month 2025-01
-docker compose up -d dashboard metabase
 ```
 
-Không cần cài Python/dbt trên Mac cho đường chạy chính. Cổng PostgreSQL host mặc định 5433 tránh xung đột 5432 của dự án cũ. Giữ nguyên port trong container là 5432.
+Mở [NYC Taxi Analytics](http://localhost:8501), chọn **2025-01**. Chạy thêm `2025-02` và `2025-03` bằng cùng lệnh pipeline để đạt phạm vi ba tháng theo slide. Khởi động Airflow là tùy chọn cho đường chạy CLI.
 
-## Kiểm thử
+## Chạy demo offline
+
+Xem [hướng dẫn demo](docs/DEMO_VI.md) để tạo dữ liệu giả lập trong Compose project riêng. Lần đầu Docker vẫn cần tải image và Python dependencies. Sau khi build xong, fixture chạy với Bronze nội bộ, không gọi TLC hoặc Open-Meteo.
+
+## Kiểm thử và tài liệu
 
 ```bash
-docker compose run --rm runner python -m unittest discover -s tests -v
+docker compose run --rm runner python -m pytest -q
+docker compose run --rm runner dbt build --project-dir dbt --profiles-dir dbt
 ```
 
-Demo offline và integration test dùng project riêng `nyc-taxi-demo` theo DEMO_VI.md, không chạy fixture lên database dữ liệu thật.
+- [Demo, Airflow, backup và chuyển từ bản cũ](docs/DEMO_VI.md)
+- [Đối chiếu từng slide và thiết kế dữ liệu](docs/ARCHITECTURE.md)
+- [Kết quả kiểm thử và cách tái lập](docs/VALIDATION.md)
 
-## Thay đổi so với starter
-
-Thay config/validate/load_staging/DAG/dbt đang chồng chéo bằng một luồng nhất quán. Giữ ingestion TLC/Open-Meteo và mở rộng ngày cuối weather để đủ giờ New York. Không giữ venv macOS, .git, secrets hoặc log cũ trong ZIP. Không tự xóa database/volume cũ. Compose project mới `nyc-taxi-gold` tách khỏi bản starter. dbt bây giờ là lớp view/test trên Gold, không tạo staging; aggregate chính được commit cùng fact để tránh dashboard đọc dữ liệu nửa cập nhật.
+Dừng dịch vụ bằng `docker compose down`. Lệnh này giữ volumes. Nếu đã bật Airflow, dùng cặp file Compose và profile như lúc khởi động, thêm `down`. Giữ project mới `nyc-taxi-platform` tách biệt với volume Gold của phiên bản cũ.

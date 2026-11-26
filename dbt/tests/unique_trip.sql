@@ -1,1 +1,3 @@
-select data_month,source_row from {{ source('gold','fact_trip') }} group by 1,2 having count(*)>1
+SELECT data_month, trip_id FROM {{ source('gold','fact_trip') }}
+GROUP BY data_month, trip_id
+HAVING count(*) > 1

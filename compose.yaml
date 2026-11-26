@@ -1,59 +1,66 @@
-name: nyc-taxi-gold
+name: nyc-taxi-platform
 x-db-env: &db-env
   POSTGRES_HOST: postgres
   POSTGRES_PORT: '5432'
   POSTGRES_USER: ${POSTGRES_USER:-taxi_admin}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Copy .env.example to .env}
   POSTGRES_DB: ${POSTGRES_DB:-nyc_taxi}
+x-runner: &runner
+  image: nyc-taxi-runner:local
+  build:
+    context: .
+    dockerfile: docker/runner/Dockerfile
 services:
   postgres:
     image: postgres:16
-    environment:
-      <<: *db-env
-    ports: ['127.0.0.1:${POSTGRES_PORT:-5433}:5432']
+    environment: *db-env
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ['CMD-SHELL','pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
       interval: 5s
       timeout: 5s
       retries: 20
+  setup:
+    <<: *runner
+    command:
+      - sh
+      - -ec
+      - chgrp 0 /opt/project/data && chmod 2775 /opt/project/data && exec python -m scripts.setup_services
+    environment:
+      <<: *db-env
+      WEB_READER_PASSWORD: ${WEB_READER_PASSWORD:?Set WEB_READER_PASSWORD in .env}
+      AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD:?Set AIRFLOW_DB_PASSWORD in .env}
+    volumes: [taxi_data:/opt/project/data]
+    depends_on:
+      postgres:
+        condition: service_healthy
   runner:
-    build:
-      context: .
-      dockerfile: docker/runner/Dockerfile
+    <<: *runner
     profiles: [tools]
-    environment:
-      <<: *db-env
-      METABASE_READER_PASSWORD: ${METABASE_READER_PASSWORD:-taxi_reader_demo_2026}
-    volumes: ['./:/opt/project']
+    environment: *db-env
+    volumes: [taxi_data:/opt/project/data]
     depends_on:
-      postgres:
-        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
   dashboard:
-    build:
-      context: .
-      dockerfile: docker/runner/Dockerfile
+    <<: *runner
     command: [python, -m, src.dashboard]
+    restart: unless-stopped
     environment:
       <<: *db-env
-      POSTGRES_USER: metabase_reader
-      POSTGRES_PASSWORD: ${METABASE_READER_PASSWORD:-taxi_reader_demo_2026}
-    ports: ['127.0.0.1:8501:8501']
+      POSTGRES_USER: taxi_web_reader
+      POSTGRES_PASSWORD: ${WEB_READER_PASSWORD:?Set WEB_READER_PASSWORD in .env}
+    ports: ['127.0.0.1:${WEB_PORT:-8501}:8501']
     depends_on:
-      postgres:
-        condition: service_healthy
-  metabase:
-    image: metabase/metabase:v0.52.10
-    ports: ['127.0.0.1:${METABASE_PORT:-3000}:3000']
-    environment:
-      MB_DB_TYPE: h2
-      MB_DB_FILE: /metabase-data/metabase.db
-    volumes: ['metabase_data:/metabase-data']
-    depends_on:
-      postgres:
-        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/api/catalog', timeout=5).close()"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
 volumes:
   postgres_data:
-  metabase_data:
+  taxi_data:
