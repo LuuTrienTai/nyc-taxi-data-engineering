@@ -4,4 +4,5 @@ RUN pip install --no-cache-dir "apache-airflow==2.10.5" -r /tmp/project-requirem
 COPY src /opt/project/src
 COPY dbt/models /opt/project/dbt/models
 COPY airflow/dags /opt/project/airflow/dags
+COPY docker/postgres/init /opt/project/docker/postgres/init
 ENV AIRFLOW__CORE__DAGS_FOLDER=/opt/project/airflow/dags GX_ANALYTICS_ENABLED=false

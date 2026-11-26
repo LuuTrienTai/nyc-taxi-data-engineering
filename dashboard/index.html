@@ -54,21 +54,25 @@
       </article>
       <div class="grid split">
         <article class="panel">
-          <div class="panel-head"><div><h2 id="zone-heading">Pickup zones</h2><p class="muted">Select a zone to filter the dashboard.</p></div>
-            <label>Rank by<select id="ranking"><option value="trips">Trips</option><option value="revenue">Revenue</option></select></label>
+          <div class="panel-head"><div><h2 id="zone-heading">Pickup zones</h2><p class="muted" id="zone-sub">Select a zone or borough to filter the dashboard.</p></div>
+            <div class="chart-controls">
+              <label>Level<select id="location-level"><option value="zone">Zone</option><option value="borough">Borough</option></select></label>
+              <label>Rank by<select id="ranking"><option value="trips">Trips</option><option value="revenue">Revenue</option></select></label>
+            </div>
           </div>
           <div id="zones" class="table-scroll"></div>
         </article>
         <article class="panel">
           <h2>Demand by weather</h2>
-          <p class="muted">Trips per local hour, including hours with zero pickups.</p>
-          <div id="weather-comparison"></div>
+          <p class="muted">Trips per local hour by precipitation and temperature band, including zero-trip hours.</p>
+          <div id="weather-precip" class="weather-precip"></div>
+          <div id="weather-comparison" class="table-scroll"></div>
           <p class="muted chart-detail">Weather observations represent a Manhattan reference point.</p>
         </article>
       </div>
       <article class="panel">
-        <div class="panel-head"><div><h2>Fare by trip distance</h2><p class="muted">Average base fare by distance band, using matching trip records.</p></div>
-          <button id="distance-load" class="quiet">Calculate</button>
+        <div class="panel-head"><div><h2>Fare by trip distance</h2><p class="muted">Average base fare, total charges, and unit fare per mile across distance bands.</p></div>
+          <button id="distance-load" class="quiet" type="button">Recalculate</button>
         </div>
         <div id="distance" class="table-scroll" aria-live="polite"></div>
       </article>

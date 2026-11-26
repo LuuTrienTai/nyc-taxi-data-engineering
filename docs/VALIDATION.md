@@ -23,6 +23,7 @@ docker compose run --rm runner python -m pytest -q
 docker compose run --rm runner dbt build --project-dir dbt --profiles-dir dbt
 docker compose run --rm -e DATA_DIR=/opt/project/data/demo runner python -m src.pipeline --month 2025-01 --skip-download
 docker compose run --rm runner python -m src.verify --month 2025-01
+docker compose run --rm -e DATA_DIR=/opt/project/data/demo runner python -m scripts.integration_check
 ```
 
 Để demo rollback, chạy lệnh đầu dưới đây. Lệnh đó phải kết thúc với lỗi mô phỏng. Lệnh verify kế tiếp vẫn phải PASS.

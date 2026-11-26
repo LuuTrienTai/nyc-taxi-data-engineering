@@ -61,7 +61,7 @@ select {
 .quiet:disabled { opacity: .5; cursor: default; }
 .notification { border: 1px solid #ead486; background: #fff7da; color: #584200; border-radius: 8px; padding: 10px 14px; margin-bottom: 15px; font-size: .88rem; }
 .error { background: #fff0ee; border-color: #dfb4ae; color: #822d25; }
-.filters { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .filters select, .filters input[type=date] { width: 100%; }
 .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .kpi, .panel, .stages button { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
@@ -85,8 +85,11 @@ th { color: var(--muted); font-size: .73rem; font-weight: 700; }
 td .subtle { display: block; font-size: .72rem; color: var(--muted); }
 .table-link { border: 0; padding: 0; background: transparent; color: var(--teal); font-weight: 680; text-align: left; }
 .table-link:hover { text-decoration: underline; }
-.weather-row { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; margin-top: 14px; font-size: .88rem; }
+.weather-precip { margin-bottom: 14px; }
+.weather-row { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; margin-top: 12px; font-size: .88rem; }
 .weather-row meter { width: 100%; grid-column: span 2; height: 12px; accent-color: var(--teal); }
+.fare-bar-cell { display: flex; align-items: center; gap: 8px; }
+.fare-bar-cell meter { width: 72px; height: 10px; accent-color: var(--teal); }
 .pipeline-intro select { min-width: 176px; }
 .stages { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
 .stages button { padding: 14px; text-align: left; }

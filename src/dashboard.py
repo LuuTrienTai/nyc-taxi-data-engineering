@@ -41,10 +41,35 @@ DATASETS = {
 }
 
 
+def summarize_weather_groups(hourly):
+    groups = {}
+    for row in hourly:
+        temperature = float(row['temperature_c'])
+        lower = int(temperature // 5) * 5
+        group = groups.setdefault(lower, {
+            'temperature_band': f'{lower} to under {lower + 5} °C',
+            'hours': 0,
+            'trips': 0,
+            'precipitation': 0.0,
+        })
+        group['hours'] += 1
+        group['trips'] += int(row['trips'])
+        group['precipitation'] += float(row['precipitation_mm'])
+    return [
+        dict(
+            **group,
+            trips_per_hour=group['trips'] / group['hours'],
+            average_precipitation=group['precipitation'] / group['hours'],
+        )
+        for _, group in sorted(groups.items(), key=lambda item: item[0])
+    ]
+
+
 def catalog(conn):
     return dict(
         months=conn.execute("""
-            SELECT data_month, bool_or(status='success') AS has_gold, coalesce(min(source_kind) FILTER (WHERE status='success'), min(source_kind)) AS source_kind,
+            SELECT data_month, bool_or(status='success') AS has_gold,
+                   coalesce(min(source_kind) FILTER (WHERE status='success'), min(source_kind)) AS source_kind,
                    to_char(data_month, 'YYYY-MM') AS month
             FROM audit.pipeline_runs GROUP BY data_month ORDER BY data_month DESC
         """).fetchall(),
@@ -84,7 +109,12 @@ def analytics(conn, start, end, param, distance_only=False):
     if distance_only:
         return conn.execute(sql.SQL("""
             SELECT width_bucket(t.trip_distance, ARRAY[0,1,3,5,10,20]) AS band,
-                   count(*) AS trips, avg(t.fare_amount) AS average_fare
+                   count(*) AS trips,
+                   avg(t.fare_amount) AS average_fare,
+                   avg(t.total_amount) AS average_total,
+                   avg(t.trip_distance) AS average_distance,
+                   avg(t.duration_minutes) AS average_duration,
+                   sum(t.fare_amount) / nullif(sum(t.trip_distance), 0) AS fare_per_mile
             FROM gold.fact_trip t
             JOIN gold.dim_zone z ON z.location_id=t.{location}
             JOIN gold.dim_weather w ON w.hour_local=t.pickup_hour
@@ -127,14 +157,16 @@ def analytics(conn, start, end, param, distance_only=False):
     if role == 'pickup':
         zone_source = """
             SELECT a.location_id, sum(a.trip_count)::bigint AS trips,
-                   sum(a.total_revenue) AS revenue, sum(a.total_fare) AS fares
+                   sum(a.total_revenue) AS revenue, sum(a.total_fare) AS fares,
+                   sum(a.total_distance) AS distance, sum(a.total_duration) AS duration
             FROM gold.agg_hourly_zone a JOIN gold.dim_weather w ON w.hour_local=a.pickup_hour
             WHERE a.data_month=%(start)s AND a.pickup_hour::date BETWEEN %(date_from)s AND %(date_to)s
         """
     else:
         zone_source = """
             SELECT t.dropoff_location_id AS location_id, count(*)::bigint AS trips,
-                   sum(t.total_amount) AS revenue, sum(t.fare_amount) AS fares
+                   sum(t.total_amount) AS revenue, sum(t.fare_amount) AS fares,
+                   sum(t.trip_distance) AS distance, sum(t.duration_minutes) AS duration
             FROM gold.fact_trip t JOIN gold.dim_weather w ON w.hour_local=t.pickup_hour
             WHERE t.data_month=%(start)s AND t.pickup_date BETWEEN %(date_from)s AND %(date_to)s
         """
@@ -146,27 +178,16 @@ def analytics(conn, start, end, param, distance_only=False):
             GROUP BY 1
         )
         SELECT z.location_id, z.zone_name, z.borough, m.trips, m.revenue,
-               m.fares / nullif(m.trips, 0) AS average_fare
+               m.fares / nullif(m.trips, 0) AS average_fare,
+               m.distance / nullif(m.trips, 0) AS average_distance,
+               m.duration / nullif(m.trips, 0) AS average_duration,
+               m.fares, m.distance, m.duration
         FROM metrics m JOIN gold.dim_zone z USING (location_id) WHERE TRUE
     """) + sql.SQL(zone_filter) + sql.SQL("""
         ORDER BY trips DESC, location_id
     """), args).fetchall()
-    weather_groups = {}
-    for row in hourly:
-        temperature = float(row['temperature_c'])
-        lower = int(temperature // 5) * 5
-        label = f'{lower} to under {lower + 5} °C'
-        group = weather_groups.setdefault(label, {
-            'temperature_band': label, 'hours': 0, 'trips': 0, 'precipitation': 0.0,
-        })
-        group['hours'] += 1
-        group['trips'] += int(row['trips'])
-        group['precipitation'] += float(row['precipitation_mm'])
-    weather_groups = [
-        dict(**group, trips_per_hour=group['trips'] / group['hours'],
-             average_precipitation=group['precipitation'] / group['hours'])
-        for group in weather_groups.values()
-    ]
+
+    weather_groups = summarize_weather_groups(hourly)
     return dict(hourly=hourly, zones=zones, weather_groups=weather_groups)
 
 

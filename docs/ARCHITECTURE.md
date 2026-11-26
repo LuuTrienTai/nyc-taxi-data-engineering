@@ -11,7 +11,7 @@ Các số trang dưới đây tính từ trang bìa của `MID-TERM SLIDES(1).pd
 | 10 · Star schema | Thiếu `dim_date`, dùng `dim_weather_hour` và ba tên mart khác slide. | `dim_date`, `dim_weather`, `dim_zone` độc lập. Zone dùng hai vai trò qua hai FK. Trong web, người xem có thể chọn pickup hoặc drop-off để nhóm và lọc khu vực. Ba marts dùng đúng tên `agg_hourly_zone`, `agg_daily_trips`, `agg_zone_revenue`. |
 | 11 · Trip identity | PK theo tháng và số dòng. Hai dòng có cùng nhận dạng vẫn được tải. | MD5 trên thuộc tính được chuẩn hóa. Bản ghi đầu theo thứ tự file được giữ, các ID lặp được đưa vào Quarantine, kể cả ở batch sau. |
 | 13 · Airflow và dbt | DAG chỉ trigger tay. dbt có một view và hai test SQL. | DAG theo lịch tháng và có tham số backfill. Cùng SQL mô hình dbt được dùng để tạo marts trong transaction. `dbt build` dựng views kiểm thử trong schema `analytics` và chạy 7 test. |
-| 7, 14 · Kênh phục vụ | Compose có cả dashboard và Metabase. | Website thay Metabase theo quyết định mới của nhóm. |
+| 7, 14 · Kênh phục vụ | Compose có công cụ BI rời bên ngoài. | Loại bỏ BI rời, dùng website read-only tích hợp sẵn theo quyết định mới của nhóm. |
 
 ## Đối chiếu use case trên web
 

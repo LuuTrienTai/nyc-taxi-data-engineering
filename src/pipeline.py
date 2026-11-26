@@ -193,7 +193,53 @@ def process_trip_batches(conn, parquet, month, run_id, dimensions, batch_size, f
     return read, loaded, rejected, preview
 
 
-def load_month(conn, run_id, month, batch_size, fail_after_batch):
+def _print_pipeline_summary(result):
+    bronze = result['bronze']
+    valid = result['silver_valid']
+    rejected = result['quarantine_rejected']
+    pass_pct = (valid / bronze * 100.0) if bronze else 0.0
+    reject_pct = (rejected / bronze * 100.0) if bronze else 0.0
+    dims = result['dims']
+    marts = result['marts']
+    reasons = result['rejection_reasons']
+    files_txt = ', '.join(
+        f"{f['file']}({f['sha256']}...)" for f in result.get('bronze_files', [])
+    )
+
+    print(
+        f"\n=== 3-Layer Pipeline Summary (month={result['month']}, run_id={result['run_id']}, "
+        f"source={result['source_kind']}) ==="
+    )
+    print(
+        f"[1. BRONZE]             taxi_rows_read={bronze:,} | zone_rows={dims['dim_zone']:,} | "
+        f"weather_hours={dims['dim_weather']:,} | files={files_txt}"
+    )
+    print(
+        f"[2. SILVER/QUARANTINE]  silver_valid={valid:,} ({pass_pct:.2f}%) | "
+        f"quarantine_rejected={rejected:,} ({reject_pct:.2f}%) | "
+        f"reconciled={'OK' if bronze == valid + rejected else 'MISMATCH'}"
+    )
+    if reasons:
+        print('    Quarantine reasons: ' + ', '.join(f'{r}={c:,}' for r, c in reasons.items()))
+    else:
+        print('    Quarantine reasons: none (0 rejected)')
+
+    if result['gold'] > 0:
+        print(
+            f"[3. GOLD]               fact_trip={result['gold']:,} | "
+            f"total_revenue=${float(result['revenue']):,.2f} | "
+            f"dim_date={dims['dim_date']:,} | dim_zone={dims['dim_zone']:,} | dim_weather={dims['dim_weather']:,}"
+        )
+        print(
+            f"    Gold marts:         agg_hourly_zone={marts['agg_hourly_zone']:,} | "
+            f"agg_daily_trips={marts['agg_daily_trips']:,} | "
+            f"agg_zone_revenue={marts['agg_zone_revenue']:,}"
+        )
+    else:
+        print('[3. GOLD]               0 accepted trips; existing Gold data left intact')
+
+
+def load_month(conn, run_id, month, batch_size, fail_after_batch, source_kind='tlc'):
     start = date.fromisoformat(month + '-01')
     end = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
     taxi = BRONZE_TAXI_DIR / f'yellow_tripdata_{month}.parquet'
@@ -211,10 +257,24 @@ def load_month(conn, run_id, month, batch_size, fail_after_batch):
         dict(file=path.name, source=source, rows=rows, bytes=path.stat().st_size, sha256=sha256(path))
         for path, source, rows in files
     ]
+    bronze_files_summary = [
+        {'file': item['file'], 'rows': item['rows'], 'sha256': item['sha256'][:12]}
+        for item in manifest
+    ]
+    dims_summary = {
+        'dim_date': (end - start).days,
+        'dim_zone': len(zones),
+        'dim_weather': len(weather),
+    }
     with conn.transaction():
         read, loaded, rejected, preview = process_trip_batches(
             conn, parquet, month, run_id, (start, end, zones, weather), batch_size, fail_after_batch,
         )
+        reason_rows = conn.execute("""
+            SELECT reason, records FROM quarantine.rejection_summary
+            WHERE run_id = %s ORDER BY records DESC, reason
+        """, (run_id,)).fetchall()
+        rejection_reasons = {r: int(c) for r, c in reason_rows}
         if not loaded:
             conn.execute("""
                 UPDATE audit.pipeline_runs SET status='failed', finished_at=clock_timestamp(),
@@ -222,20 +282,39 @@ def load_month(conn, run_id, month, batch_size, fail_after_batch):
                     rows_read=%s, rows_loaded=0, rows_rejected=%s, bronze_files=%s, preview='[]'::jsonb
                 WHERE run_id=%s
             """, (read, rejected, Jsonb(manifest), run_id))
-            return dict(run_id=run_id, month=month, bronze=read, gold=0, rejected=rejected)
+            return dict(
+                run_id=run_id, month=month, bronze=read, silver_valid=0,
+                quarantine_rejected=rejected, gold=0, rejected=rejected,
+                revenue='0.00', source_kind=source_kind,
+                bronze_files=bronze_files_summary, dims=dims_summary,
+                rejection_reasons=rejection_reasons, marts={},
+            )
         for table in MARTS:
             identifier = sql.Identifier('gold', table)
             model = (BASE_DIR / 'dbt' / 'models' / f'{table}.sql').read_text()
             conn.execute(sql.SQL('DELETE FROM {} WHERE data_month = %s').format(identifier), (start,))
             conn.execute(sql.SQL('INSERT INTO {} SELECT * FROM ({}) AS model WHERE data_month = %s')
                          .format(identifier, sql.SQL(model)), (start,))
-        reconcile(conn, start, run_id, read, loaded, rejected)
+        _, fact_revenue = reconcile(conn, start, run_id, read, loaded, rejected)
+        marts_summary = {
+            table: int(conn.execute(
+                sql.SQL('SELECT count(*) FROM {} WHERE data_month = %s').format(sql.Identifier('gold', table)),
+                (start,),
+            ).fetchone()[0])
+            for table in MARTS
+        }
         conn.execute("""
             UPDATE audit.pipeline_runs SET status='success', finished_at=clock_timestamp(),
                 rows_read=%s, rows_loaded=%s, rows_rejected=%s, bronze_files=%s, preview=%s
             WHERE run_id=%s
         """, (read, loaded, rejected, Jsonb(manifest), Jsonb(preview), run_id))
-    return dict(run_id=run_id, month=month, bronze=read, gold=loaded, rejected=rejected)
+    return dict(
+        run_id=run_id, month=month, bronze=read, silver_valid=loaded,
+        quarantine_rejected=rejected, gold=loaded, rejected=rejected,
+        revenue=f'{float(fact_revenue):.2f}', source_kind=source_kind,
+        bronze_files=bronze_files_summary, dims=dims_summary,
+        rejection_reasons=rejection_reasons, marts=marts_summary,
+    )
 
 
 def build_gold(month, fail_after_batch=False, batch_size=50000):
@@ -260,14 +339,15 @@ def build_gold(month, fail_after_batch=False, batch_size=50000):
             VALUES (%s, 'running', %s) RETURNING run_id
         """, (start, source_kind)).fetchone()[0]
         try:
-            result = load_month(conn, run_id, month, batch_size, fail_after_batch)
+            result = load_month(conn, run_id, month, batch_size, fail_after_batch, source_kind=source_kind)
         except Exception as exc:
             conn.execute("""
                 UPDATE audit.pipeline_runs SET status='failed',finished_at=clock_timestamp(),error_message=%s
                 WHERE run_id=%s
             """, (str(exc)[:2000], run_id))
             raise
-    print(json.dumps(result))
+    _print_pipeline_summary(result)
+    print(json.dumps(result, default=str))
     if not result['gold']:
         raise ValueError('No accepted trips; see Quarantine and run audit')
     return result

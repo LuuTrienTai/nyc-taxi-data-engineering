@@ -139,8 +139,8 @@ async function load() {
       const data = await request('analytics', filters());
       if (revision !== state.revision) return;
       state.stats = data;
-      $('distance').replaceChildren();
       renderAnalytics();
+      loadDistance(revision);
     } else if (view === 'pipeline') {
       const data = await request('pipeline', { month: month.month, run: state.run, reason: state.reason, after: state.after });
       if (revision !== state.revision) return;
@@ -172,13 +172,13 @@ function navigate() {
 }
 
 function renderAnalytics() {
-  const sum = { trips: 0, revenue: 0, fares: 0, distance: 0 };
+  const sum = { trips: 0, revenue: 0, fares: 0, distance: 0, duration: 0 };
   const periods = new Map();
   for (const row of state.stats.hourly) {
     for (const field of Object.keys(sum)) sum[field] += Number(row[field]);
     const entry = periods.get(row.wet) || { hours: 0, trips: 0 };
     entry.hours += 1;
-    entry.trips += row.trips;
+    entry.trips += Number(row.trips);
     periods.set(row.wet, entry);
   }
   $('kpis').replaceChildren();
@@ -193,6 +193,28 @@ function renderAnalytics() {
     card.append(el('span', title), el('strong', value));
     $('kpis').append(card);
   }
+
+  const precipEntries = [
+    ['Dry (0 mm)', periods.get(false)],
+    ['Rain / snow (>0 mm)', periods.get(true)],
+  ].filter(([, entry]) => entry && entry.hours > 0);
+  const maxRate = Math.max(1, ...precipEntries.map(([, e]) => e.trips / e.hours));
+  $('weather-precip').replaceChildren();
+  for (const [label, entry] of precipEntries) {
+    const rate = entry.trips / entry.hours;
+    const row = el('div', undefined, 'weather-row');
+    row.append(
+      el('span', `${label} · ${count.format(entry.hours)} hrs`),
+      el('strong', `${decimal.format(rate)} trips/hr`),
+    );
+    const meter = el('meter');
+    meter.min = 0;
+    meter.max = maxRate;
+    meter.value = rate;
+    row.append(meter);
+    $('weather-precip').append(row);
+  }
+
   const weatherRows = state.stats.weather_groups.map((row) => [
     row.temperature_band, count.format(row.hours), decimal.format(row.trips_per_hour),
     decimal.format(row.average_precipitation) + ' mm',
@@ -208,34 +230,46 @@ function renderChart() {
   const interval = $('interval').value;
   const metric = $('metric').value;
   const format = metric === 'revenue' ? money : count;
-  $('chart-title').textContent = (interval === 'day' ? 'Daily ' : 'Hourly ') +
-    (metric === 'revenue' ? 'pickup revenue' : 'pickup demand');
+  const intervalLabels = { day: 'Daily', hour: 'Hourly', weekday: 'Weekday vs weekend' };
+  const roleLabel = $('location-role').value === 'pickup' ? 'pickup' : 'drop-off';
+  $('chart-title').textContent = `${intervalLabels[interval]} ${roleLabel} ${metric === 'revenue' ? 'revenue' : 'demand'}`;
   const bins = new Map();
   const weekdayNames = ['Monday–Friday', 'Saturday–Sunday'];
   for (const row of state.stats.hourly) {
     const key = interval === 'day' ? row.hour_local.slice(0, 10)
       : interval === 'hour' ? row.hour_local.slice(11, 13) + ':00'
       : weekdayNames[row.iso_weekday >= 6 ? 1 : 0];
-    bins.set(key, (bins.get(key) || 0) + Number(row[metric]));
+    const bucket = bins.get(key) || { total: 0, days: new Set() };
+    bucket.total += Number(row[metric]);
+    bucket.days.add(row.hour_local.slice(0, 10));
+    bins.set(key, bucket);
   }
   const values = [...bins].sort(([a], [b]) => a.localeCompare(b));
-  const max = Math.max(1, ...values.map(([, value]) => value));
+  const max = Math.max(1, ...values.map(([, bucket]) => bucket.total));
   $('chart').replaceChildren();
   $('chart-detail').textContent = values.length ? 'Select a bar to inspect its value.' : 'No hours match the current selection.';
-  for (const [i, [key, value]] of values.entries()) {
+  for (const [i, [key, bucket]] of values.entries()) {
+    const value = bucket.total;
+    const avgPerDay = bucket.days.size ? value / bucket.days.size : 0;
+    const detailSuffix = interval === 'weekday'
+      ? ` (${bucket.days.size} days · ${format.format(avgPerDay)} / day)`
+      : (metric === 'trips' ? ' trips' : ' in total charges');
     const label = key + ' · ' + format.format(value);
     const bar = el('button', undefined, 'bar');
     bar.type = 'button';
-    bar.title = label;
-    bar.setAttribute('aria-label', label);
+    bar.title = label + detailSuffix;
+    bar.setAttribute('aria-label', label + detailSuffix);
     bar.setAttribute('aria-pressed', 'false');
-    bar.append(el('i'), el('span', values.length < 16 || i % 4 === 0 || i === values.length - 1
-      ? (interval === 'day' ? key.slice(8) : interval === 'hour' ? key.slice(0, 2) : (i === 0 ? 'Weekdays' : 'Weekend')) : ''));
+    const xLabel = values.length < 16 || i % 4 === 0 || i === values.length - 1
+      ? (interval === 'day' ? key.slice(8) : interval === 'hour' ? key.slice(0, 2)
+        : (key.startsWith('Monday') ? 'Weekdays' : 'Weekend'))
+      : '';
+    bar.append(el('i'), el('span', xLabel));
     bar.style.setProperty('--height', Math.max(value ? 3 : 1, value / max * 140) + 'px');
     bar.addEventListener('click', () => {
       $('chart').querySelector('[aria-pressed=true]')?.setAttribute('aria-pressed', 'false');
       bar.setAttribute('aria-pressed', 'true');
-      $('chart-detail').textContent = label + (metric === 'trips' ? ' trips' : ' in total charges');
+      $('chart-detail').textContent = label + detailSuffix;
     });
     $('chart').append(bar);
   }
@@ -244,20 +278,73 @@ function renderChart() {
 function renderZones() {
   if (!state.stats) return;
   const key = $('ranking').value;
-  $('zone-heading').textContent = $('location-role').value === 'pickup' ? 'Pickup zones' : 'Drop-off zones';
+  const level = $('location-level').value;
+  const roleTitle = $('location-role').value === 'pickup' ? 'Pickup' : 'Drop-off';
+  if (level === 'borough') {
+    $('zone-heading').textContent = `${roleTitle} boroughs`;
+    $('zone-sub').textContent = 'Select a borough to filter the dashboard.';
+    const byBorough = new Map();
+    for (const row of state.stats.zones) {
+      const b = byBorough.get(row.borough) || {
+        borough: row.borough, trips: 0, revenue: 0, fares: 0, distance: 0, duration: 0,
+      };
+      b.trips += Number(row.trips);
+      b.revenue += Number(row.revenue);
+      b.fares += Number(row.fares || 0);
+      b.distance += Number(row.distance || 0);
+      b.duration += Number(row.duration || 0);
+      byBorough.set(row.borough, b);
+    }
+    const rows = [...byBorough.values()].sort((a, b) => Number(b[key]) - Number(a[key]));
+    fillTable(
+      $('zones'),
+      ['Borough', 'Trips', 'Charges', 'Avg. fare', 'Avg. dist', 'Avg. dur'],
+      rows.map((row) => {
+        const button = el('button', row.borough, 'table-link');
+        button.type = 'button';
+        button.addEventListener('click', () => {
+          $('borough').value = row.borough;
+          setZones('');
+          load();
+        });
+        return [
+          button,
+          count.format(row.trips),
+          money.format(row.revenue),
+          row.trips ? money.format(row.fares / row.trips) : '—',
+          row.trips ? decimal.format(row.distance / row.trips) + ' mi' : '—',
+          row.trips ? decimal.format(row.duration / row.trips) + ' min' : '—',
+        ];
+      }),
+    );
+    return;
+  }
+
+  $('zone-heading').textContent = `${roleTitle} zones`;
+  $('zone-sub').textContent = 'Select a zone to filter the dashboard.';
   const rows = [...state.stats.zones].sort((a, b) => Number(b[key]) - Number(a[key])).slice(0, 12);
-  fillTable($('zones'), [($('location-role').value === 'pickup' ? 'Pickup' : 'Drop-off') + ' zone', 'Trips', 'Charges', 'Avg. fare'], rows.map((row) => {
-    const label = el('div');
-    const button = el('button', row.zone_name, 'table-link');
-    button.type = 'button';
-    button.addEventListener('click', () => {
-      $('borough').value = row.borough;
-      setZones(String(row.location_id));
-      load();
-    });
-    label.append(button, el('small', row.borough, 'subtle'));
-    return [label, count.format(row.trips), money.format(row.revenue), money.format(row.average_fare)];
-  }));
+  fillTable(
+    $('zones'),
+    [`${roleTitle} zone`, 'Trips', 'Charges', 'Avg. fare', 'Avg. dist'],
+    rows.map((row) => {
+      const label = el('div');
+      const button = el('button', row.zone_name, 'table-link');
+      button.type = 'button';
+      button.addEventListener('click', () => {
+        $('borough').value = row.borough;
+        setZones(String(row.location_id));
+        load();
+      });
+      label.append(button, el('small', row.borough, 'subtle'));
+      return [
+        label,
+        count.format(row.trips),
+        money.format(row.revenue),
+        money.format(row.average_fare),
+        decimal.format(row.average_distance || 0) + ' mi',
+      ];
+    }),
+  );
 }
 
 function preview(title, payload) {
@@ -366,8 +453,7 @@ function renderGold(data) {
   $('gold-back').disabled = state.pages.length < 2;
 }
 
-async function loadDistance() {
-  const revision = state.revision;
+async function loadDistance(revision = state.revision) {
   const button = $('distance-load');
   button.disabled = true;
   $('distance').replaceChildren(el('p', 'Calculating from trip records…', 'muted'));
@@ -378,8 +464,28 @@ async function loadDistance() {
       'Under 1 mi', '1 to under 3 mi', '3 to under 5 mi',
       '5 to under 10 mi', '10 to under 20 mi', '20 mi and over',
     ];
-    fillTable($('distance'), ['Distance band', 'Trips', 'Average base fare'],
-      rows.map((row) => [labels[row.band - 1], count.format(row.trips), money.format(row.average_fare)]));
+    const maxFare = Math.max(1, ...rows.map((r) => Number(r.average_fare || 0)));
+    fillTable(
+      $('distance'),
+      ['Distance band', 'Trips', 'Avg. dist', 'Avg. base fare', 'Avg. total', 'Fare / mi', 'Avg. dur'],
+      rows.map((row) => {
+        const fareCell = el('div', undefined, 'fare-bar-cell');
+        const meter = el('meter');
+        meter.min = 0;
+        meter.max = maxFare;
+        meter.value = Number(row.average_fare || 0);
+        fareCell.append(el('span', money.format(row.average_fare)), meter);
+        return [
+          labels[row.band - 1] || `Band ${row.band}`,
+          count.format(row.trips),
+          decimal.format(row.average_distance || 0) + ' mi',
+          fareCell,
+          money.format(row.average_total || 0),
+          money.format(row.fare_per_mile || 0),
+          decimal.format(row.average_duration || 0) + ' min',
+        ];
+      }),
+    );
   } catch (error) {
     if (revision === state.revision) $('distance').replaceChildren(el('p', error.message, 'muted'));
   } finally {
@@ -431,8 +537,8 @@ $('reset').addEventListener('click', () => {
   load();
 });
 for (const id of ['metric', 'interval']) $(id).addEventListener('change', renderChart);
-$('ranking').addEventListener('change', renderZones);
-$('distance-load').addEventListener('click', loadDistance);
+for (const id of ['ranking', 'location-level']) $(id).addEventListener('change', renderZones);
+$('distance-load').addEventListener('click', () => loadDistance());
 $('run').addEventListener('change', () => {
   state.run = $('run').value;
   state.reason = '';
