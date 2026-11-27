@@ -139,14 +139,13 @@ def prepare_gold_month(conn, start, end, zones, weather):
 
 def process_trip_batches(conn, parquet, month, run_id, dimensions, batch_size, fail_after_batch):
     start, end, zones, weather = dimensions
-    zone_labels = zones.set_index('location_id')[['borough', 'zone_name']].to_dict('index')
-    weather_labels = weather.set_index('hour_local')[['temperature_c', 'precipitation_mm']].to_dict('index')
+    zone_ids = set(zones.location_id)
     read = loaded = rejected = 0
     seen = set()
     preview = []
     for batch in parquet.iter_batches(batch_size=batch_size):
         raw = batch.to_pandas()
-        valid, invalid = clean_batch(raw, month, read, zone_labels.keys())
+        valid, invalid = clean_batch(raw, month, read, zone_ids)
         reasons = dict(invalid.itertuples(index=False, name=None))
         # Normalize optional numeric attributes across Parquet integer/float types.
         extras = raw.reindex(columns=IDENTITY_EXTRAS).apply(pd.to_numeric, errors='coerce').astype(float)
@@ -174,14 +173,9 @@ def process_trip_batches(conn, parquet, month, run_id, dimensions, batch_size, f
                 record = raw.iloc[row - read - 1].to_dict()
                 copy.write_row((run_id, row, reason, Jsonb(json_record(record))))
         for record in valid.head(max(0, 5 - len(preview))).to_dict('records'):
-            pickup = zone_labels[record['pickup_location_id']]
-            dropoff = zone_labels[record['dropoff_location_id']]
-            enriched = dict(record, pickup_zone=pickup['zone_name'], pickup_borough=pickup['borough'],
-                            dropoff_zone=dropoff['zone_name'], dropoff_borough=dropoff['borough'],
-                            **weather_labels[record['pickup_hour']])
             preview.append({
                 'bronze': json_record(raw.iloc[record['source_row'] - read - 1].to_dict()),
-                'silver': json_record(enriched),
+                'silver': json_record(record),
             })
         read += batch.num_rows
         loaded += len(valid)

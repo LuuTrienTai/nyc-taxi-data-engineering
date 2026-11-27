@@ -2,8 +2,15 @@
 
 const $ = (id) => document.getElementById(id);
 const count = new Intl.NumberFormat('en-US');
+const compactCount = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 });
 const decimal = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+const compactMoney = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  notation: 'compact',
+  maximumFractionDigits: 2,
+});
 const screen = {
   analytics: ['NYC TLC / Yellow Taxi', 'Taxi demand & revenue'],
   pipeline: ['Monthly batch / Data quality', 'Pipeline explorer'],
@@ -19,7 +26,7 @@ const datasets = {
   agg_zone_revenue: 'Trips, total charges and average base fare by pickup zone.',
 };
 const state = { catalog: null, stats: null, audit: null, view: 'analytics', stage: 'bronze',
-  run: '', reason: '', after: 0, pages: [0], next: null, revision: 0 };
+  run: '', reason: '', quarantinePage: 1, goldPage: 1, revision: 0 };
 
 function el(tag, text, className) {
   const node = document.createElement(tag);
@@ -56,6 +63,52 @@ function fillTable(target, headings, rows, emptyMessage = 'No records match the 
     }
   }
   target.replaceChildren(table);
+}
+
+function renderPageControls(target, page, totalPages, totalRows, onPageChange) {
+  const controls = el('div', undefined, 'page-controls');
+  const prev = el('button', 'Previous', 'quiet');
+  prev.type = 'button';
+  prev.disabled = page <= 1;
+  prev.addEventListener('click', () => onPageChange(page - 1));
+
+  const next = el('button', 'Next', 'quiet');
+  next.type = 'button';
+  next.disabled = page >= totalPages;
+  next.addEventListener('click', () => onPageChange(page + 1));
+
+  const info = el(
+    'span',
+    `Page ${count.format(page)} of ${count.format(totalPages)} (${count.format(totalRows)} rows)`,
+    'page-info',
+  );
+
+  const form = el('form', undefined, 'page-jump');
+  const prompt = el('span', 'Go to page');
+  const input = el('input');
+  input.type = 'number';
+  input.min = '1';
+  input.max = String(totalPages);
+  input.step = '1';
+  input.value = String(page);
+  input.setAttribute('aria-label', 'Page number');
+  input.disabled = totalPages <= 1;
+
+  const go = el('button', 'Go', 'quiet');
+  go.type = 'submit';
+  go.disabled = totalPages <= 1;
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const parsed = Number.parseInt(input.value, 10);
+    if (!Number.isFinite(parsed)) return;
+    const targetPage = Math.min(Math.max(parsed, 1), totalPages);
+    if (targetPage !== page) onPageChange(targetPage);
+  });
+
+  form.append(prompt, input, go);
+  controls.append(prev, next, info, form);
+  target.replaceChildren(controls);
 }
 
 async function request(path, params = {}) {
@@ -142,13 +195,15 @@ async function load() {
       renderAnalytics();
       loadDistance(revision);
     } else if (view === 'pipeline') {
-      const data = await request('pipeline', { month: month.month, run: state.run, reason: state.reason, after: state.after });
+      const data = await request('pipeline', { month: month.month, run: state.run, reason: state.reason, page: state.quarantinePage });
       if (revision !== state.revision) return;
       state.audit = data;
+      state.quarantinePage = data.page;
       renderPipeline();
     } else {
-      const data = await request('gold', { month: month.month, table: $('dataset').value, after: state.pages.at(-1) });
+      const data = await request('gold', { month: month.month, table: $('dataset').value, page: state.goldPage });
       if (revision !== state.revision) return;
+      state.goldPage = data.page;
       renderGold(data);
     }
     $(view).hidden = false;
@@ -182,15 +237,29 @@ function renderAnalytics() {
     periods.set(row.wet, entry);
   }
   $('kpis').replaceChildren();
-  for (const [title, value] of [
-    ['Taxi trips', count.format(sum.trips)],
-    ['Total charges', money.format(sum.revenue)],
+  const kpis = [
+    [
+      'Taxi trips',
+      Math.abs(sum.trips) >= 1000 ? compactCount.format(sum.trips) : count.format(sum.trips),
+      Math.abs(sum.trips) >= 1000 ? count.format(sum.trips) : undefined,
+    ],
+    [
+      'Total charges',
+      Math.abs(sum.revenue) >= 1000 ? compactMoney.format(sum.revenue) : money.format(sum.revenue),
+      Math.abs(sum.revenue) >= 1000 ? money.format(sum.revenue) : undefined,
+    ],
     ['Average base fare', sum.trips ? money.format(sum.fares / sum.trips) : '—'],
     ['Average distance', sum.trips ? decimal.format(sum.distance / sum.trips) + ' mi' : '—'],
     ['Average duration', sum.trips ? decimal.format(sum.duration / sum.trips) + ' min' : '—'],
-  ]) {
+  ];
+  for (const [title, value, detail] of kpis) {
     const card = el('div', undefined, 'kpi');
     card.append(el('span', title), el('strong', value));
+    if (detail) {
+      const sub = el('small', detail);
+      sub.title = detail;
+      card.append(sub);
+    }
     $('kpis').append(card);
   }
 
@@ -369,7 +438,7 @@ function renderPipeline() {
 }
 
 function renderStage() {
-  const {run, reasons, rejected, next} = state.audit;
+  const {run, reasons, rejected, page, total_pages, total_rows} = state.audit;
   const target = $('stage-content');
   const titles = { bronze: 'Bronze files', silver: 'Silver processing in memory',
     gold: 'Gold load and reconciliation', quarantine: 'Rejected trips' };
@@ -426,21 +495,19 @@ function renderStage() {
     select.value = state.reason;
     select.addEventListener('change', () => {
       state.reason = select.value;
-      state.after = 0;
+      state.quarantinePage = 1;
       load();
     });
     label.append(select);
     target.append(label);
     for (const row of rejected) target.append(preview('Row ' + row.source_row + ' · ' + row.reason, row.raw_record));
     if (!rejected.length) target.append(el('p', 'No rejected rows in this selection.', 'muted'));
-    const tools = el('div', undefined, 'stage-tools');
-    for (const [labelText, value, disabled] of [['First page', 0, !state.after], ['Next page', next, next == null]]) {
-      const button = el('button', labelText, 'quiet');
-      button.disabled = disabled;
-      button.addEventListener('click', () => { state.after = value; load(); });
-      tools.append(button);
-    }
-    target.append(tools);
+    const pagination = el('div');
+    renderPageControls(pagination, page, total_pages, total_rows, (nextPage) => {
+      state.quarantinePage = nextPage;
+      load();
+    });
+    target.append(pagination);
   }
 }
 
@@ -448,9 +515,10 @@ function renderGold(data) {
   $('dataset-description').textContent = datasets[data.table];
   const keys = Object.keys(data.rows[0] || {});
   fillTable($('gold-data'), keys, data.rows.map((row) => keys.map((key) => row[key] == null ? '—' : String(row[key]))));
-  state.next = data.next;
-  $('gold-next').disabled = data.next === null;
-  $('gold-back').disabled = state.pages.length < 2;
+  renderPageControls($('gold-pagination'), data.page, data.total_pages, data.total_rows, (nextPage) => {
+    state.goldPage = nextPage;
+    load();
+  });
 }
 
 async function loadDistance(revision = state.revision) {
@@ -521,8 +589,8 @@ async function boot() {
 $('month').addEventListener('change', () => {
   setDateBounds();
   state.run = state.reason = '';
-  state.after = 0;
-  state.pages = [0];
+  state.quarantinePage = 1;
+  state.goldPage = 1;
   load();
 });
 $('borough').addEventListener('change', () => { setZones(); load(); });
@@ -542,7 +610,7 @@ $('distance-load').addEventListener('click', () => loadDistance());
 $('run').addEventListener('change', () => {
   state.run = $('run').value;
   state.reason = '';
-  state.after = 0;
+  state.quarantinePage = 1;
   load();
 });
 $('stages').addEventListener('click', (event) => {
@@ -552,7 +620,5 @@ $('stages').addEventListener('click', (event) => {
     renderStage();
   }
 });
-$('dataset').addEventListener('change', () => { state.pages = [0]; load(); });
-$('gold-next').addEventListener('click', () => { state.pages.push(state.next); load(); });
-$('gold-back').addEventListener('click', () => { state.pages.pop(); load(); });
+$('dataset').addEventListener('change', () => { state.goldPage = 1; load(); });
 boot();

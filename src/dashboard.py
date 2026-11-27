@@ -24,20 +24,29 @@ DATASETS = {
                pu.zone_name AS pickup_zone, dof.zone_name AS dropoff_zone,
                d.iso_weekday, w.temperature_c, w.precipitation_mm, t.trip_distance,
                t.fare_amount, t.total_amount, t.duration_minutes
-        FROM (SELECT * FROM gold.fact_trip WHERE data_month=%s AND source_row > %s
-              ORDER BY source_row LIMIT 26) t
+        FROM (SELECT * FROM gold.fact_trip WHERE data_month=%s
+              ORDER BY source_row LIMIT 25 OFFSET %s) t
         JOIN gold.dim_zone pu ON pu.location_id=t.pickup_location_id
         JOIN gold.dim_zone dof ON dof.location_id=t.dropoff_location_id
         JOIN gold.dim_date d ON d.date_key=t.pickup_date
         JOIN gold.dim_weather w ON w.hour_local=t.pickup_hour
         ORDER BY t.source_row
     """,
-    'dim_date': 'SELECT * FROM gold.dim_date WHERE date_key >= %s AND date_key < %s ORDER BY date_key LIMIT 26 OFFSET %s',
-    'dim_zone': 'SELECT * FROM gold.dim_zone ORDER BY location_id LIMIT 26 OFFSET %s',
-    'dim_weather': 'SELECT * FROM gold.dim_weather WHERE hour_local >= %s AND hour_local < %s ORDER BY hour_local LIMIT 26 OFFSET %s',
-    'agg_hourly_zone': 'SELECT * FROM gold.agg_hourly_zone WHERE data_month=%s ORDER BY pickup_hour, location_id LIMIT 26 OFFSET %s',
-    'agg_daily_trips': 'SELECT * FROM gold.agg_daily_trips WHERE data_month=%s ORDER BY pickup_date LIMIT 26 OFFSET %s',
-    'agg_zone_revenue': 'SELECT * FROM gold.agg_zone_revenue WHERE data_month=%s ORDER BY total_revenue DESC, location_id LIMIT 26 OFFSET %s',
+    'dim_date': 'SELECT * FROM gold.dim_date WHERE date_key >= %s AND date_key < %s ORDER BY date_key LIMIT 25 OFFSET %s',
+    'dim_zone': 'SELECT * FROM gold.dim_zone ORDER BY location_id LIMIT 25 OFFSET %s',
+    'dim_weather': 'SELECT * FROM gold.dim_weather WHERE hour_local >= %s AND hour_local < %s ORDER BY hour_local LIMIT 25 OFFSET %s',
+    'agg_hourly_zone': 'SELECT * FROM gold.agg_hourly_zone WHERE data_month=%s ORDER BY pickup_hour, location_id LIMIT 25 OFFSET %s',
+    'agg_daily_trips': 'SELECT * FROM gold.agg_daily_trips WHERE data_month=%s ORDER BY pickup_date LIMIT 25 OFFSET %s',
+    'agg_zone_revenue': 'SELECT * FROM gold.agg_zone_revenue WHERE data_month=%s ORDER BY total_revenue DESC, location_id LIMIT 25 OFFSET %s',
+}
+DATASET_COUNTS = {
+    'fact_trip': 'SELECT count(*) AS total FROM gold.fact_trip WHERE data_month=%s',
+    'dim_date': 'SELECT count(*) AS total FROM gold.dim_date WHERE date_key >= %s AND date_key < %s',
+    'dim_zone': 'SELECT count(*) AS total FROM gold.dim_zone',
+    'dim_weather': 'SELECT count(*) AS total FROM gold.dim_weather WHERE hour_local >= %s AND hour_local < %s',
+    'agg_hourly_zone': 'SELECT count(*) AS total FROM gold.agg_hourly_zone WHERE data_month=%s',
+    'agg_daily_trips': 'SELECT count(*) AS total FROM gold.agg_daily_trips WHERE data_month=%s',
+    'agg_zone_revenue': 'SELECT count(*) AS total FROM gold.agg_zone_revenue WHERE data_month=%s',
 }
 
 
@@ -191,49 +200,58 @@ def analytics(conn, start, end, param, distance_only=False):
     return dict(hourly=hourly, zones=zones, weather_groups=weather_groups)
 
 
-def pipeline(conn, month, run_id, reason, after):
+def pipeline(conn, month, run_id, reason, page=1):
     runs = conn.execute("""
         SELECT run_id, status, source_kind, started_at, finished_at, rows_read, rows_loaded, rows_rejected
         FROM audit.pipeline_runs WHERE data_month=%s ORDER BY run_id DESC LIMIT 30
     """, (month,)).fetchall()
-    if run_id < 0 or after < 0:
-        raise ValueError('Invalid run or source row')
+    if run_id < 0 or page < 1:
+        raise ValueError('Invalid run or page')
     if not run_id:
         run_id = next((r['run_id'] for r in runs if r['status'] == 'success'), runs[0]['run_id'] if runs else 0)
     run = conn.execute("""
         SELECT run_id, status, source_kind, finished_at, rows_read, rows_loaded, rows_rejected, bronze_files, preview
         FROM audit.pipeline_runs WHERE data_month=%s AND run_id=%s
     """, (month, run_id)).fetchone()
-    result = dict(runs=runs, run=run, reasons=[], rejected=[])
+    result = dict(runs=runs, run=run, reasons=[], rejected=[], page=1, total_pages=1, total_rows=0)
     if run and run['bronze_files'] is not None:
         result['reasons'] = conn.execute("""
             SELECT reason, records FROM quarantine.rejection_summary WHERE run_id=%s ORDER BY records DESC, reason
         """, (run_id,)).fetchall()
+        total_rows = (
+            next((int(r['records']) for r in result['reasons'] if r['reason'] == reason), 0)
+            if reason else sum(int(r['records']) for r in result['reasons'])
+        )
+        total_pages = max(1, (total_rows + 19) // 20)
+        current_page = min(page, total_pages)
+        offset = (current_page - 1) * 20
         result['rejected'] = conn.execute("""
             SELECT source_row, reason, raw_record FROM quarantine.rejected_trip
-            WHERE run_id=%s AND source_row > %s AND (%s::text IS NULL OR reason=%s)
-            ORDER BY source_row LIMIT 21
-        """, (run_id, after, reason, reason)).fetchall()
-    result['next'] = result['rejected'][19]['source_row'] if len(result['rejected']) > 20 else None
-    result['rejected'] = result['rejected'][:20]
+            WHERE run_id=%s AND (%s::text IS NULL OR reason=%s)
+            ORDER BY source_row LIMIT 20 OFFSET %s
+        """, (run_id, reason, reason, offset)).fetchall()
+        result['page'] = current_page
+        result['total_pages'] = total_pages
+        result['total_rows'] = total_rows
     return result
 
 
-def dataset(conn, name, start, end, after):
-    if name not in DATASETS or not 0 <= after < 10**10:
-        raise ValueError('Invalid table or position')
+def dataset(conn, name, start, end, page=1):
+    if name not in DATASETS or not 1 <= page < 10**8:
+        raise ValueError('Invalid table or page')
     if name == 'dim_zone':
-        args = (after,)
+        count_args = ()
     elif name in ('dim_date', 'dim_weather'):
-        args = (start, end, after)
+        count_args = (start, end)
     else:
-        args = (start, after)
-    results = conn.execute(DATASETS[name], args).fetchall()
-    rows = results[:25]
-    next_after = None
-    if len(results) > 25:
-        next_after = rows[-1]['source_row'] if name == 'fact_trip' else after + 25
-    return dict(table=name, rows=rows, next=next_after)
+        count_args = (start,)
+    total_rows = int(conn.execute(DATASET_COUNTS[name], count_args).fetchone()['total'])
+    total_pages = max(1, (total_rows + 24) // 25)
+    current_page = min(page, total_pages)
+    offset = (current_page - 1) * 25
+    args = (*count_args, offset)
+    rows = conn.execute(DATASETS[name], args).fetchall()
+    return dict(table=name, rows=rows, page=current_page, total_pages=total_pages, total_rows=total_rows)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -278,9 +296,9 @@ class Handler(BaseHTTPRequestHandler):
                     elif url.path == '/api/distance':
                         data = analytics(conn, start, end, param, distance_only=True)
                     elif url.path == '/api/pipeline':
-                        data = pipeline(conn, start, int(param('run', 0)), param('reason', None), int(param('after', 0)))
+                        data = pipeline(conn, start, int(param('run', 0)), param('reason', None), int(param('page', 1)))
                     else:
-                        data = dataset(conn, param('table', 'fact_trip'), start, end, int(param('after', 0)))
+                        data = dataset(conn, param('table', 'fact_trip'), start, end, int(param('page', 1)))
             self.send_json(200, data)
         except (ValueError, OverflowError, psycopg.errors.NumericValueOutOfRange):
             self.send_json(400, {'error': 'Check the month, filters and page parameters.'})
